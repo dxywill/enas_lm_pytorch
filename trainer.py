@@ -178,14 +178,7 @@ class Trainer(object):
 
     def build_model(self):
         """Creates and initializes the shared and controller models."""
-        if self.args.network_type == 'rnn':
-            self.shared = models.RNN(self.args, self.dataset)
-        elif self.args.network_type == 'cnn':
-            self.shared = models.CNN(self.args, self.dataset)
-        else:
-            raise NotImplementedError(f'Network type '
-                                      f'`{self.args.network_type}` is not '
-                                      f'defined')
+        self.shared = models.RNN(self.args, self.dataset)
         self.controller = models.Controller(self.args)
 
         if self.args.num_gpu == 1:

@@ -14,38 +14,14 @@ import utils
 logger = utils.get_logger()
 
 
-def _get_dropped_weights(w_raw, dropout_p, is_training):
-    """Drops out weights to implement DropConnect.
+def _gen_mask(shape, drop_prob):
+    """Generate a droppout mask."""
+    keep_prob = 1. - drop_prob
+    #mask = tf.random_uniform(shape, dtype=tf.float32)
+    mask = torch.FloatTensor(shape[0], shape[1]).uniform_(0, 1)
+    mask = torch.floor(mask + keep_prob) / keep_prob
+    return mask
 
-    Args:
-        w_raw: Full, pre-dropout, weights to be dropped out.
-        dropout_p: Proportion of weights to drop out.
-        is_training: True iff _shared_ model is training.
-
-    Returns:
-        The dropped weights.
-
-    TODO(brendan): Why does torch.nn.functional.dropout() return:
-    1. `torch.autograd.Variable()` on the training loop
-    2. `torch.nn.Parameter()` on the controller or eval loop, when
-    training = False...
-
-    Even though the call to `_setweights` in the Smerity repo's
-    `weight_drop.py` does not have this behaviour, and `F.dropout` always
-    returns `torch.autograd.Variable` there, even when `training=False`?
-
-    The above TODO is the reason for the hacky check for `torch.nn.Parameter`.
-    """
-    dropped_w = F.dropout(w_raw, p=dropout_p, training=is_training)
-
-    if isinstance(dropped_w, torch.nn.Parameter):
-        dropped_w = dropped_w.clone()
-
-    return dropped_w
-
-
-def isnan(tensor):
-    return np.isnan(tensor.cpu().data.numpy()).sum() > 0
 
 
 class EmbeddingDropout(torch.nn.Embedding):
@@ -116,7 +92,6 @@ class EmbeddingDropout(torch.nn.Embedding):
                            scale_grad_by_freq=self.scale_grad_by_freq,
                            sparse=self.sparse)
 
-
 class LockedDropout(nn.Module):
     # code from https://github.com/salesforce/awd-lstm-lm/blob/master/locked_dropout.py
     def __init__(self):
@@ -131,6 +106,34 @@ class LockedDropout(nn.Module):
         return mask * x
 
 
+def _set_default_params(params):
+    """Set default hyper-parameters."""
+    params.add_hparam('alpha', 0.0)  # activation L2 reg
+    params.add_hparam('beta', 1.)  # activation slowness reg
+    params.add_hparam('best_valid_ppl_threshold', 5)
+
+    params.add_hparam('batch_size', FLAGS.child_batch_size)
+    params.add_hparam('bptt_steps', FLAGS.child_bptt_steps)
+
+    # for dropouts: dropping rate, NOT keeping rate
+    params.add_hparam('drop_e', 0.10)  # word
+    params.add_hparam('drop_i', 0.20)  # embeddings
+    params.add_hparam('drop_x', 0.75)  # input to RNN cells
+    params.add_hparam('drop_l', 0.25)  # between layers
+    params.add_hparam('drop_o', 0.75)  # output
+    params.add_hparam('drop_w', 0.00)  # weight
+
+    params.add_hparam('grad_bound', 0.1)
+    params.add_hparam('hidden_size', 200)
+    params.add_hparam('init_range', 0.04)
+    params.add_hparam('learning_rate', 20.)
+    params.add_hparam('num_train_epochs', 600)
+    params.add_hparam('vocab_size', 10000)
+
+    params.add_hparam('weight_decay', 8e-7)
+    return params
+
+
 class RNN(models.shared_base.SharedModel):
     """Shared RNN model."""
     def __init__(self, args, corpus):
@@ -139,237 +142,231 @@ class RNN(models.shared_base.SharedModel):
         self.args = args
         self.corpus = corpus
 
+        hidden_size = args.shared_hid
+        num_layers = args.num_layers
+        num_func = args.num_funcs
+
         self.decoder = nn.Linear(args.shared_hid, corpus.num_tokens)
         self.encoder = EmbeddingDropout(corpus.num_tokens,
                                         args.shared_embed,
                                         dropout=args.shared_dropoute)
         self.lockdrop = LockedDropout()
 
-        if self.args.tie_weights:
-            self.decoder.weight = self.encoder.weight
+        self.w_prev = nn.Linear(hidden_size * 2, hidden_size * 2)
+
+        # if self.args.tie_weights:
+        #     self.decoder.weight = self.encoder.weight
 
         # NOTE(brendan): Since W^{x, c} and W^{h, c} are always summed, there
         # is no point duplicating their bias offset parameter. Likewise for
         # W^{x, h} and W^{h, h}.
-        self.w_xc = nn.Linear(args.shared_embed, args.shared_hid)
-        self.w_xh = nn.Linear(args.shared_embed, args.shared_hid)
-
+        # self.w_xc = nn.Linear(args.shared_embed, args.shared_hid)
+        # self.w_xh = nn.Linear(args.shared_embed, args.shared_hid)
+        #
         # The raw weights are stored here because the hidden-to-hidden weights
         # are weight dropped on the forward pass.
-        self.w_hc_raw = torch.nn.Parameter(
-            torch.Tensor(args.shared_hid, args.shared_hid))
-        self.w_hh_raw = torch.nn.Parameter(
-            torch.Tensor(args.shared_hid, args.shared_hid))
-        self.w_hc = None
-        self.w_hh = None
+        # self.w_hc_raw = torch.nn.Parameter(
+        #     torch.Tensor(args.shared_hid, args.shared_hid))
+        # self.w_hh_raw = torch.nn.Parameter(
+        #     torch.Tensor(args.shared_hid, args.shared_hid))
+        # self.w_hc = None
+        # self.w_hh = None
 
         self.w_h = collections.defaultdict(dict)
         self.w_c = collections.defaultdict(dict)
 
-        for idx in range(args.num_blocks):
-            for jdx in range(idx + 1, args.num_blocks):
-                self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
-                                               args.shared_hid,
-                                               bias=False)
-                self.w_c[idx][jdx] = nn.Linear(args.shared_hid,
-                                               args.shared_hid,
-                                               bias=False)
+        self.w_combined = collections.defaultdict(dict)
 
-        self._w_h = nn.ModuleList([self.w_h[idx][jdx]
-                                   for idx in self.w_h
-                                   for jdx in self.w_h[idx]])
-        self._w_c = nn.ModuleList([self.w_c[idx][jdx]
-                                   for idx in self.w_c
-                                   for jdx in self.w_c[idx]])
+        for f in num_func:
+            for idx in range(num_layers):
+                for jdx in range(idx + 1, num_layers):
+                    self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
+                                                   args.shared_hid,
+                                                   bias=False)
+                    self.w_c[idx][jdx] = nn.Linear(args.shared_hid,
+                                                   args.shared_hid,
+                                                   bias=False)
+                    self.w_combined[f][idx][jdx] = nn.Linear(args.shared_hid, args.shared_hid * 2, bias=False)
 
-        if args.mode == 'train':
-            self.batch_norm = nn.BatchNorm1d(args.shared_hid)
+        # self._w_h = nn.ModuleList([self.w_h[idx][jdx]
+        #                            for idx in self.w_h
+        #                            for jdx in self.w_h[idx]])
+        # self._w_c = nn.ModuleList([self.w_c[idx][jdx]
+        #                            for idx in self.w_c
+        #                            for jdx in self.w_c[idx]])
+
+
+        # if args.mode == 'train':
+        #     self.batch_norm = nn.BatchNorm1d(args.shared_hid)
+        # else:
+        #     self.batch_norm = None
+        #
+        # self.reset_parameters()
+        # self.static_init_hidden = utils.keydefaultdict(self.init_hidden)
+        #
+        # logger.info(f'# of parameters: {format(self.num_parameters, ",d")}')
+
+    def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask,
+                params):
+        """Multi-layer LSTM.
+
+        Args:
+            sample_arc: [num_layers * 2], sequence of tokens representing architecture.
+            x: [batch_size, num_steps, hidden_size].
+            prev_s: [batch_size, hidden_size].
+            w_prev: [2 * hidden_size, 2 * hidden_size].
+            w_skip: [None, [hidden_size, 2 * hidden_size] * (num_layers-1)].
+            input_mask: `[batch_size, hidden_size]`.
+            layer_mask: `[batch_size, hidden_size]`.
+            params: hyper-params object.
+
+        Returns:
+            next_s: [batch_size, hidden_size].
+            all_s: [[batch_size, num_steps, hidden_size] * num_layers].
+        """
+        batch_size = x.size()[0]
+        num_steps = x.size()[1]
+        num_layers = len(sample_arc) // 2
+
+        all_s = []
+
+        # extract the relevant variables, so that you only do L2-reg on them.
+        u_skip = []
+        start_idx = 0
+        for layer_id in range(num_layers):
+            prev_idx = sample_arc[start_idx]
+            func_idx = sample_arc[start_idx + 1]
+            u_skip.append(self.w_combined[func_idx][prev_idx][layer_id])
+            start_idx += 2
+        w_skip = u_skip
+        var_s = [self.w_prev] + w_skip[1:]
+
+        def _select_function(h, function_id):
+            h = torch.stack([F.tanh(h), F.relu(h), F.sigmoid(h), h], dim=0)
+            h = h[function_id]
+            return h
+
+        step = 0
+        while step < num_steps:
+
+            """Body function."""
+            inp = x[:, step, :]
+
+            # important change: first input uses a tanh()
+            if layer_mask is not None:
+                assert input_mask is not None
+                ht = torch.matmul(torch.cat([inp * input_mask, prev_s * layer_mask],
+                                            dim=1), self.w_prev)
+            else:
+                ht = torch.matmul(torch.cat([inp, prev_s], dim=1), self.w_prev)
+            h, t = torch.split(ht, 2, dim=1)
+            h = F.tanh(h)
+            t = F.sigmoid(t)
+            s = prev_s + t * (h - prev_s)
+            layers = [s]
+
+            start_idx = 0
+            used = []
+            for layer_id in range(num_layers):
+                prev_idx = sample_arc[start_idx]
+                func_idx = sample_arc[start_idx + 1]
+                # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
+                prev_s = torch.stack(layers, dim=0)[prev_idx]
+                if layer_mask is not None:
+                    ht = torch.matmul(prev_s * layer_mask, self.w_combined[func_idx][prev_idx][layer_id])
+                else:
+                    ht = torch.matmul(prev_s, self.w_combined[func_idx][prev_idx][layer_id])
+                h, t = torch.split(ht, 2, dim=1)
+
+                h = _select_function(h, func_idx)
+                t = F.sigmoid(t)
+                s = prev_s + t * (h - prev_s)
+                s.set_shape([batch_size, self.hidden_size])
+                layers.append(s)
+                start_idx += 2
+
+            next_s = torch.sum(layers[1:], dim=0) / num_layers
+            all_s.append(next_s)
+
+            prev_s = next_s
+            step += 1
+
+        # all_s = tf.transpose(all_s.stack(), [1, 0, 2])
+
+        return next_s, all_s, var_s
+
+    def forward(self, x, y, model_params, init_states, is_training=False):
+        """Computes the logits.
+
+        Args:
+            x: [batch_size, num_steps], input batch.
+            y: [batch_size, num_steps], output batch.
+            model_params: a `dict` of params to use.
+            init_states: a `dict` of params to use.
+            is_training: if `True`, will apply regularizations.
+
+        Returns:
+            loss: scalar, cross-entropy loss
+        """
+        w_emb = model_params['w_emb']
+        w_prev = model_params['w_prev']
+        w_skip = model_params['w_skip']
+        w_soft = model_params['w_soft']
+        prev_s = init_states['s']
+
+        emb = tf.nn.embedding_lookup(w_emb, x)
+        batch_size = self.params.batch_size
+        hidden_size = self.params.hidden_size
+        sample_arc = self.sample_arc
+        if is_training:
+            emb = tf.layers.dropout(
+                    emb, self.params.drop_i, [batch_size, 1, hidden_size], training=True)
+
+            input_mask = _gen_mask([batch_size, hidden_size], self.params.drop_x)
+            layer_mask = _gen_mask([batch_size, hidden_size], self.params.drop_l)
         else:
-            self.batch_norm = None
+            input_mask = None
+            layer_mask = None
 
-        self.reset_parameters()
-        self.static_init_hidden = utils.keydefaultdict(self.init_hidden)
+        out_s, all_s, var_s = _rnn_fn(sample_arc, emb, prev_s, w_prev, w_skip,
+                                                                    input_mask, layer_mask, params=self.params)
 
-        logger.info(f'# of parameters: {format(self.num_parameters, ",d")}')
+        top_s = all_s
+        if is_training:
+            top_s = tf.layers.dropout(
+                    top_s, self.params.drop_o,
+                    [self.params.batch_size, 1, self.params.hidden_size], training=True)
 
-    def forward(self,  # pylint:disable=arguments-differ
-                inputs,
-                dag,
-                hidden=None,
-                is_train=True):
-        time_steps = inputs.size(0)
-        batch_size = inputs.size(1)
+        carry_on = [tf.assign(prev_s, out_s)]
+        logits = tf.einsum('bnh,vh->bnv', top_s, w_soft)
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y,
+                                                            logits=logits)
+        loss = tf.reduce_mean(loss)
 
-        is_train = is_train and self.args.mode in ['train']
+        reg_loss = loss  # `loss + regularization_terms` is for training only
+        if is_training:
+            # L2 weight reg
+            self.l2_reg_loss = tf.add_n([tf.nn.l2_loss(w ** 2) for w in var_s])
+            reg_loss += self.params.weight_decay * self.l2_reg_loss
 
-        self.w_hh = _get_dropped_weights(self.w_hh_raw,
-                                         self.args.shared_wdrop,
-                                         self.training)
-        self.w_hc = _get_dropped_weights(self.w_hc_raw,
-                                         self.args.shared_wdrop,
-                                         self.training)
+            # activation L2 reg
+            reg_loss += self.params.alpha * tf.reduce_mean(all_s ** 2)
 
-        if hidden is None:
-            hidden = self.static_init_hidden[batch_size]
+            # activation slowness reg
+            reg_loss += self.params.beta * tf.reduce_mean(
+                    (all_s[:, 1:, :] - all_s[:, :-1, :]) ** 2)
 
-        embed = self.encoder(inputs)
+        with tf.control_dependencies(carry_on):
+            loss = tf.identity(loss)
+            if is_training:
+                reg_loss = tf.identity(reg_loss)
 
-        if self.args.shared_dropouti > 0:
-            embed = self.lockdrop(embed,
-                                  self.args.shared_dropouti if is_train else 0)
-
-        # TODO(brendan): The norm of hidden states are clipped here because
-        # otherwise ENAS is especially prone to exploding activations on the
-        # forward pass. This could probably be fixed in a more elegant way, but
-        # it might be exposing a weakness in the ENAS algorithm as currently
-        # proposed.
-        #
-        # For more details, see
-        # https://github.com/carpedm20/ENAS-pytorch/issues/6
-        clipped_num = 0
-        max_clipped_norm = 0
-        h1tohT = []
-        logits = []
-        for step in range(time_steps):
-            x_t = embed[step]
-            logit, hidden = self.cell(x_t, hidden, dag)
-
-            hidden_norms = hidden.norm(dim=-1)
-            max_norm = 25.0
-            if hidden_norms.data.max() > max_norm:
-                # TODO(brendan): Just directly use the torch slice operations
-                # in PyTorch v0.4.
-                #
-                # This workaround for PyTorch v0.3.1 does everything in numpy,
-                # because the PyTorch slicing and slice assignment is too
-                # flaky.
-                hidden_norms = hidden_norms.data.cpu().numpy()
-
-                clipped_num += 1
-                if hidden_norms.max() > max_clipped_norm:
-                    max_clipped_norm = hidden_norms.max()
-
-                clip_select = hidden_norms > max_norm
-                clip_norms = hidden_norms[clip_select]
-
-                mask = np.ones(hidden.size())
-                normalizer = max_norm/clip_norms
-                normalizer = normalizer[:, np.newaxis]
-
-                mask[clip_select] = normalizer
-                hidden *= torch.autograd.Variable(
-                    torch.FloatTensor(mask).cuda(), requires_grad=False)
-
-            logits.append(logit)
-            h1tohT.append(hidden)
-
-        if clipped_num > 0:
-            logger.info(f'clipped {clipped_num} hidden states in one forward '
-                        f'pass. '
-                        f'max clipped hidden state norm: {max_clipped_norm}')
-
-        h1tohT = torch.stack(h1tohT)
-        output = torch.stack(logits)
-        raw_output = output
-        if self.args.shared_dropout > 0:
-            output = self.lockdrop(output,
-                                   self.args.shared_dropout if is_train else 0)
-
-        dropped_output = output
-
-        decoded = self.decoder(
-            output.view(output.size(0)*output.size(1), output.size(2)))
-        decoded = decoded.view(output.size(0), output.size(1), decoded.size(1))
-
-        extra_out = {'dropped': dropped_output,
-                     'hiddens': h1tohT,
-                     'raw': raw_output}
-        return decoded, hidden, extra_out
-
-    def cell(self, x, h_prev, dag):
-        """Computes a single pass through the discovered RNN cell."""
-        c = {}
-        h = {}
-        f = {}
-
-        f[0] = self.get_f(dag[-1][0].name)
-        c[0] = F.sigmoid(self.w_xc(x) + F.linear(h_prev, self.w_hc, None))
-        h[0] = (c[0]*f[0](self.w_xh(x) + F.linear(h_prev, self.w_hh, None)) +
-                (1 - c[0])*h_prev)
-
-        leaf_node_ids = []
-        q = collections.deque()
-        q.append(0)
-
-        # NOTE(brendan): Computes connections from the parent nodes `node_id`
-        # to their child nodes `next_id` recursively, skipping leaf nodes. A
-        # leaf node is a node whose id == `self.args.num_blocks`.
-        #
-        # Connections between parent i and child j should be computed as
-        # h_j = c_j*f_{ij}{(W^h_{ij}*h_i)} + (1 - c_j)*h_i,
-        # where c_j = \sigmoid{(W^c_{ij}*h_i)}
-        #
-        # See Training details from Section 3.1 of the paper.
-        #
-        # The following algorithm does a breadth-first (since `q.popleft()` is
-        # used) search over the nodes and computes all the hidden states.
-        while True:
-            if len(q) == 0:
-                break
-
-            node_id = q.popleft()
-            nodes = dag[node_id]
-
-            for next_node in nodes:
-                next_id = next_node.id
-                if next_id == self.args.num_blocks:
-                    leaf_node_ids.append(node_id)
-                    assert len(nodes) == 1, ('parent of leaf node should have '
-                                             'only one child')
-                    continue
-
-                w_h = self.w_h[node_id][next_id]
-                w_c = self.w_c[node_id][next_id]
-
-                f[next_id] = self.get_f(next_node.name)
-                c[next_id] = F.sigmoid(w_c(h[node_id]))
-                h[next_id] = (c[next_id]*f[next_id](w_h(h[node_id])) +
-                              (1 - c[next_id])*h[node_id])
-
-                q.append(next_id)
-
-        # TODO(brendan): Instead of averaging loose ends, perhaps there should
-        # be a set of separate unshared weights for each "loose" connection
-        # between each node in a cell and the output.
-        #
-        # As it stands, all weights W^h_{ij} are doing double duty by
-        # connecting both from i to j, as well as from i to the output.
-
-        # average all the loose ends
-        leaf_nodes = [h[node_id] for node_id in leaf_node_ids]
-        output = torch.mean(torch.stack(leaf_nodes, 2), -1)
-
-        # stabilizing the Updates of omega
-        if self.batch_norm is not None:
-            output = self.batch_norm(output)
-
-        return output, h[self.args.num_blocks - 1]
+        return reg_loss, loss
 
     def init_hidden(self, batch_size):
         zeros = torch.zeros(batch_size, self.args.shared_hid)
         return utils.get_variable(zeros, self.args.cuda, requires_grad=False)
 
-    def get_f(self, name):
-        name = name.lower()
-        if name == 'relu':
-            f = F.relu
-        elif name == 'tanh':
-            f = F.tanh
-        elif name == 'identity':
-            f = lambda x: x
-        elif name == 'sigmoid':
-            f = F.sigmoid
-        return f
 
     def get_num_cell_parameters(self, dag):
         num = 0

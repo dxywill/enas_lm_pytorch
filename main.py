@@ -20,13 +20,7 @@ def main(args):  # pylint:disable=redefined-outer-name
     if args.num_gpu > 0:
         torch.cuda.manual_seed(args.random_seed)
 
-    if args.network_type == 'rnn':
-        dataset = data.text.Corpus(args.data_path)
-    elif args.dataset == 'cifar':
-        dataset = data.image.Image(args.data_path)
-    else:
-        raise NotImplementedError(f"{args.dataset} is not supported")
-
+    dataset = data.text.Corpus(args.data_path)
     trnr = trainer.Trainer(args, dataset)
 
     if args.mode == 'train':

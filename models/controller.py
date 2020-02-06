@@ -7,7 +7,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 import utils
-from utils import Node
 
 
 class Controller(torch.nn.Module):
@@ -31,6 +30,7 @@ class Controller(torch.nn.Module):
         self.attention_w_1 = nn.Linear(hidden_size, hidden_size)
         self.attention_w_2 = nn.Linear(hidden_size, hidden_size)
         self.attention_v = nn.Linear(hidden_size, 1)
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
         self.init_weights()
 
 
@@ -74,7 +74,6 @@ class Controller(torch.nn.Module):
         prev_c = torch.zeros([1, hidden_size], dtype=torch.float32)
         prev_h = torch.zeros([1, hidden_size], dtype=torch.float32)
 
-        loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
 
         for layer_id in range(1, num_layers + 1):
 
@@ -104,7 +103,7 @@ class Controller(torch.nn.Module):
             skip_index = torch.reshape(skip_index, [1])
             arc_seq.append(skip_index)
 
-            log_prob = loss_fn(logits, skip_index)
+            log_prob = self.loss_fn(logits, skip_index)
             sample_log_probs.append(log_prob)
 
             entropy = log_prob * torch.exp(-log_prob)
@@ -130,7 +129,7 @@ class Controller(torch.nn.Module):
             arc_seq.append(func)
             # log_prob = tf.nn.sparse_softmax_cross_entropy_with_logits(
             #     logits=logits, labels=func)
-            log_prob = loss_fn(logits, func)
+            log_prob = self.loss_fn(logits, func)
             sample_log_probs.append(log_prob)
             entropy = log_prob * torch.exp(-log_prob)
             sample_entropy.append(entropy)

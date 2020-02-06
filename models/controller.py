@@ -19,18 +19,19 @@ class Controller(torch.nn.Module):
     Base the controller RNN on the GRU from:
     https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
     """
-    def __init__(self, params):
+    def __init__(self, args):
         torch.nn.Module.__init__(self)
-        self.params = params
-        hidden_size = params.controller_hidden_size
-        num_funcs = params.controller_num_functions
+        self.args = args
+        hidden_size = args.controller_hidden_size
+        num_funcs = args.controller_num_functions
         self.g_emb = nn.Linear(1, hidden_size)
         self.w_emb = nn.Linear(hidden_size, num_funcs)
         # self.w_emb =
         self.attention_w_1 = nn.Linear(hidden_size, hidden_size)
         self.attention_w_2 = nn.Linear(hidden_size, hidden_size)
         self.attention_v = nn.Linear(hidden_size, 1)
-        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
+        self.loss_fn = nn.CrossEntropyLoss(reduction='mean')
+        self.lstm = nn.LSTMCell(args.controller_hidden_size, args.controller_hidden_size)
         self.init_weights()
 
 
@@ -98,21 +99,24 @@ class Controller(torch.nn.Module):
             diff = (layer_id - torch.arange(0, layer_id)) ** 2
             logits -= torch.reshape(diff, [1, layer_id]) / 6.0
 
-            skip_index = torch.multinomial(logits, 1)
-            skip_index = int(skip_index)
-            skip_index = torch.reshape(skip_index, [1])
-            arc_seq.append(skip_index)
+            #
+            probs = F.softmax(logits, dim=-1)
+            log_prob = F.log_softmax(logits, dim=-1)
+            action = probs.multinomial(num_sample=1).data
+            selected_log_prob = log_prob.gather(
+                1, utils.get_variable(action, required_grad=False)
+            )
 
-            log_prob = self.loss_fn(logits, skip_index)
-            sample_log_probs.append(log_prob)
+            arc_seq.append(action[:, 0])
+            sample_log_probs.append(selected_log_prob[:, 0])
 
-            entropy = log_prob * torch.exp(-log_prob)
+            entropy = selected_log_prob[:, 0] * torch.exp(-selected_log_prob[:, 0])
             sample_entropy.append(entropy)
 
 
             # sample activation function
-            inputs = torch.cat(all_h[:-1], 0)[skip_index]
-            inputs /= (0.1 + (layer_id - skip_index))
+            inputs = torch.cat(all_h[:-1], 0)[action[:, 0]]
+            inputs /= (0.1 + (layer_id - action[:, 0]))
 
             next_h, next_c = self.lstm(inputs, (prev_h, prev_c), self.w_lstm)
             prev_h, prev_c = next_h, next_c
@@ -123,17 +127,19 @@ class Controller(torch.nn.Module):
                 logits /= self.params.controller_temperature
             if self.params.controller_tanh_constant:
                 logits = self.params.controller_tanh_constant * torch.tanh(logits)
-            func = torch.multinomial(logits, 1)
-            #func = tf.to_int32(func)
-            func = torch.reshape(func, [1])
-            arc_seq.append(func)
-            # log_prob = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            #     logits=logits, labels=func)
-            log_prob = self.loss_fn(logits, func)
-            sample_log_probs.append(log_prob)
-            entropy = log_prob * torch.exp(-log_prob)
+
+            probs = F.softmax(logits, dim=-1)
+            log_prob = F.log_softmax(logits, dim=-1)
+            action = probs.multinomial(num_sample=1).data
+            selected_log_prob = log_prob.gather(
+                1, utils.get_variable(action, required_grad=False)
+            )
+            arc_seq.append(action[:, 0])
+
+            sample_log_probs.append(selected_log_prob[:, 0])
+            entropy = selected_log_prob[:, 0] * torch.exp(-selected_log_prob[:, 0])
             sample_entropy.append(entropy)
-            inputs = self.w_emb.weight.data[func]
+            input = self.w_emb.weight.data[action[:, 0]]
 
         arc_seq = torch.cat(arc_seq, 0)
         self.sample_arc = arc_seq
@@ -145,4 +151,4 @@ class Controller(torch.nn.Module):
         self.sample_entropy = torch.reduce_sum(sample_entropy)
 
         self.all_h = all_h
-        return arc_seq
+        return arc_seq, sample_log_probs, sample_entropy

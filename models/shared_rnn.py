@@ -229,7 +229,7 @@ class RNN(models.shared_base.SharedModel):
 
         return next_s, all_s, var_s
 
-    def forward(self, x, y, model_params, init_states, is_training=False):
+    def forward(self, x, sample_arc, is_training=False):
         """Computes the logits.
 
         Args:
@@ -246,7 +246,6 @@ class RNN(models.shared_base.SharedModel):
         emb = self.embeddings(x)
         batch_size = self.params.batch_size
         hidden_size = self.params.hidden_size
-        sample_arc = self.sample_arc
         prev_s = self.init_hidden(batch_size)
 
         if is_training:
@@ -270,14 +269,15 @@ class RNN(models.shared_base.SharedModel):
             #         [self.params.batch_size, 1, self.params.hidden_size], training=True)
             top_s = self.lockdrop(top_s, self.args.drop_o)
 
-        prev_s = out_s
+        # prev_s = out_s
         logits = torch.einsum('bnh,vh->bnv', top_s, self.embeddings.weight.data)
+
         # loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y,
         #                                                     logits=logits)
-        loss = self.loss_fn(logits, y)
+        # loss = self.loss_fn(logits, y)
         #loss = torch.reduce_mean(loss)
 
-        reg_loss = loss  # `loss + regularization_terms` is for training only
+        # reg_loss = loss  # `loss + regularization_terms` is for training only
         # if is_training:
         #     # L2 weight reg
         #     self.l2_reg_loss = tf.add_n([tf.nn.l2_loss(w ** 2) for w in var_s])
@@ -291,7 +291,7 @@ class RNN(models.shared_base.SharedModel):
         #             (all_s[:, 1:, :] - all_s[:, :-1, :]) ** 2)
 
 
-        return reg_loss, loss
+        return logits
 
     def init_hidden(self, batch_size):
         zeros = torch.zeros(batch_size, self.args.shared_hid)

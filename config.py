@@ -17,7 +17,6 @@ def add_argument_group(name):
 
 # Network
 net_arg = add_argument_group('Network')
-net_arg.add_argument('--network_type', type=str, choices=['rnn', 'cnn'], default='rnn')
 
 # Controller
 net_arg.add_argument('--num_blocks', type=int, default=12)
@@ -132,10 +131,25 @@ misc_arg.add_argument('--max_save_num', type=int, default=4)
 misc_arg.add_argument('--log_level', type=str, default='INFO', choices=['INFO', 'DEBUG', 'WARN'])
 misc_arg.add_argument('--log_dir', type=str, default='logs')
 misc_arg.add_argument('--data_dir', type=str, default='data')
-misc_arg.add_argument('--num_gpu', type=int, default=1)
+misc_arg.add_argument('--num_gpu', type=int, default=0)
 misc_arg.add_argument('--random_seed', type=int, default=12345)
 misc_arg.add_argument('--use_tensorboard', type=str2bool, default=True)
 misc_arg.add_argument('--dag_path', type=str, default='')
+
+
+# Extra
+
+extra_arg = add_argument_group('Extra')
+extra_arg.add_argument('--controller_hidden_size', type=int, default=64)
+extra_arg.add_argument('--controller_num_functions', type=int, default=4)
+extra_arg.add_argument('--controller_num_layers', type=int, default=8)
+extra_arg.add_argument('--controller_temperature', type=float, default=5.)
+extra_arg.add_argument('--controller_tanh_constant', type=float, default=2.25)
+extra_arg.add_argument('--controller_learning_rate', type=float, default=5e-5)
+extra_arg.add_argument('--controller_entropy_weight', type=float, default=1e-5)
+extra_arg.add_argument('--controller_baseline_dec', type=float, default=0.999)
+
+
 
 def get_args():
     """Parses all of the arguments above, which mostly correspond to the

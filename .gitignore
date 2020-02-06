@@ -10,6 +10,8 @@ paper/
 videos/
 models/
 
+logs/
+
 *.h5
 
 *.py[cod]

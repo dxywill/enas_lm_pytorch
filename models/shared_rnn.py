@@ -35,33 +35,33 @@ class LockedDropout(nn.Module):
         mask = mask.expand_as(x)
         return mask * x
 
-
-def _set_default_params(params):
-    """Set default hyper-parameters."""
-    params.add_hparam('alpha', 0.0)  # activation L2 reg
-    params.add_hparam('beta', 1.)  # activation slowness reg
-    params.add_hparam('best_valid_ppl_threshold', 5)
-
-    params.add_hparam('batch_size', FLAGS.child_batch_size)
-    params.add_hparam('bptt_steps', FLAGS.child_bptt_steps)
-
-    # for dropouts: dropping rate, NOT keeping rate
-    params.add_hparam('drop_e', 0.10)  # word
-    params.add_hparam('drop_i', 0.20)  # embeddings
-    params.add_hparam('drop_x', 0.75)  # input to RNN cells
-    params.add_hparam('drop_l', 0.25)  # between layers
-    params.add_hparam('drop_o', 0.75)  # output
-    params.add_hparam('drop_w', 0.00)  # weight
-
-    params.add_hparam('grad_bound', 0.1)
-    params.add_hparam('hidden_size', 200)
-    params.add_hparam('init_range', 0.04)
-    params.add_hparam('learning_rate', 20.)
-    params.add_hparam('num_train_epochs', 600)
-    params.add_hparam('vocab_size', 10000)
-
-    params.add_hparam('weight_decay', 8e-7)
-    return params
+#
+# def _set_default_params(params):
+#     """Set default hyper-parameters."""
+#     params.add_hparam('alpha', 0.0)  # activation L2 reg
+#     params.add_hparam('beta', 1.)  # activation slowness reg
+#     params.add_hparam('best_valid_ppl_threshold', 5)
+#
+#     params.add_hparam('batch_size', FLAGS.child_batch_size)
+#     params.add_hparam('bptt_steps', FLAGS.child_bptt_steps)
+#
+#     # for dropouts: dropping rate, NOT keeping rate
+#     params.add_hparam('drop_e', 0.10)  # word
+#     params.add_hparam('drop_i', 0.20)  # embeddings
+#     params.add_hparam('drop_x', 0.75)  # input to RNN cells
+#     params.add_hparam('drop_l', 0.25)  # between layers
+#     params.add_hparam('drop_o', 0.75)  # output
+#     params.add_hparam('drop_w', 0.00)  # weight
+#
+#     params.add_hparam('grad_bound', 0.1)
+#     params.add_hparam('hidden_size', 200)
+#     params.add_hparam('init_range', 0.04)
+#     params.add_hparam('learning_rate', 20.)
+#     params.add_hparam('num_train_epochs', 600)
+#     params.add_hparam('vocab_size', 10000)
+#
+#     params.add_hparam('weight_decay', 8e-7)
+#     return params
 
 
 class RNN(models.shared_base.SharedModel):
@@ -73,8 +73,8 @@ class RNN(models.shared_base.SharedModel):
         self.corpus = corpus
 
         hidden_size = args.shared_hid
-        num_layers = args.num_layers
-        num_func = args.num_funcs
+        num_layers = args.controller_num_layers
+        num_func = args.controller_num_functions
 
         self.decoder = nn.Linear(args.shared_hid, corpus.num_tokens)
         self.embeddings = nn.Embedding(corpus.num_tokens,
@@ -109,7 +109,7 @@ class RNN(models.shared_base.SharedModel):
         for idx in range(num_layers):
             for jdx in range(idx + 1, num_layers):
                 self.w_combined[idx][jdx] = []
-                for f in num_func:
+                for f in range(num_func):
                     self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
                                                    args.shared_hid,
                                                    bias=False)

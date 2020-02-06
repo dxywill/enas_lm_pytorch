@@ -24,7 +24,8 @@ class Controller(torch.nn.Module):
         self.args = args
         hidden_size = args.controller_hidden_size
         num_funcs = args.controller_num_functions
-        self.g_emb = nn.Linear(1, hidden_size)
+        #self.g_emb = nn.Linear(1, hidden_size)
+        self.g_emb = torch.zeros([1, hidden_size], dtype=torch.float32)
         self.w_emb = nn.Linear(hidden_size, num_funcs)
         # self.w_emb =
         self.attention_w_1 = nn.Linear(hidden_size, hidden_size)
@@ -38,8 +39,7 @@ class Controller(torch.nn.Module):
     def init_weights(self):
         initrange = 0.01
         #self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.g_emb.bias.data.zero_()
-        self.g_emb.weight.data.uniform_(-initrange, initrange)
+        self.g_emb.data.uniform_(-initrange, initrange)
 
         self.w_emb.bias.data.zero_()
         self.w_emb.weight.data.uniform_(-initrange, initrange)
@@ -62,8 +62,8 @@ class Controller(torch.nn.Module):
         """Samples a architecture
         """
 
-        hidden_size = self.params.controller_hidden_size
-        num_layers = self.params.controller_num_layers
+        hidden_size = self.args.controller_hidden_size
+        num_layers = self.args.controller_num_layers
 
         arc_seq = []
         sample_log_probs = []
@@ -71,7 +71,7 @@ class Controller(torch.nn.Module):
         all_h = [torch.zeros([1, hidden_size], dtype=torch.float32)]
         all_h_w = [torch.zeros([1, hidden_size], dtype=torch.float32)]
 
-        input = self.g_emb
+        inputs = self.g_emb
         prev_c = torch.zeros([1, hidden_size], dtype=torch.float32)
         prev_h = torch.zeros([1, hidden_size], dtype=torch.float32)
 
@@ -79,7 +79,7 @@ class Controller(torch.nn.Module):
         for layer_id in range(1, num_layers + 1):
 
             # sample previous node
-            next_h, next_c = self.lstm(input, (prev_h, prev_c))
+            next_h, next_c = self.lstm(inputs, (prev_h, prev_c))
             prev_h, prev_c = next_h, next_c
             all_h.append(next_h)
             all_h_w.append(self.attention_w_1(next_h))
@@ -91,20 +91,21 @@ class Controller(torch.nn.Module):
             logits = torch.reshape(logits, [1, layer_id])
 
 
-            if self.params.controller_temperature:
-                logits /= self.params.controller_temperature
-            if self.params.controller_tanh_constant:
-                logits = self.params.controller_tanh_constant * torch.tanh(logits)
+            if self.args.controller_temperature:
+                logits /= self.args.controller_temperature
+            if self.args.controller_tanh_constant:
+                logits = self.args.controller_tanh_constant * torch.tanh(logits)
 
             diff = (layer_id - torch.arange(0, layer_id)) ** 2
+            diff  = diff.float()
             logits -= torch.reshape(diff, [1, layer_id]) / 6.0
 
             #
             probs = F.softmax(logits, dim=-1)
             log_prob = F.log_softmax(logits, dim=-1)
-            action = probs.multinomial(num_sample=1).data
+            action = probs.multinomial(num_samples=1).data
             selected_log_prob = log_prob.gather(
-                1, utils.get_variable(action, required_grad=False)
+                1, utils.get_variable(action, requires_grad=False)
             )
 
             arc_seq.append(action[:, 0])
@@ -116,39 +117,39 @@ class Controller(torch.nn.Module):
 
             # sample activation function
             inputs = torch.cat(all_h[:-1], 0)[action[:, 0]]
-            inputs /= (0.1 + (layer_id - action[:, 0]))
+            inputs /= (0.1 + (layer_id - action[:, 0])).float()
 
-            next_h, next_c = self.lstm(inputs, (prev_h, prev_c), self.w_lstm)
+            next_h, next_c = self.lstm(inputs, (prev_h, prev_c))
             prev_h, prev_c = next_h, next_c
 
             logits = self.w_emb(next_h)
 
-            if self.params.controller_temperature:
-                logits /= self.params.controller_temperature
-            if self.params.controller_tanh_constant:
-                logits = self.params.controller_tanh_constant * torch.tanh(logits)
+            if self.args.controller_temperature:
+                logits /= self.args.controller_temperature
+            if self.args.controller_tanh_constant:
+                logits = self.args.controller_tanh_constant * torch.tanh(logits)
 
             probs = F.softmax(logits, dim=-1)
             log_prob = F.log_softmax(logits, dim=-1)
-            action = probs.multinomial(num_sample=1).data
+            action = probs.multinomial(num_samples=1).data
             selected_log_prob = log_prob.gather(
-                1, utils.get_variable(action, required_grad=False)
+                1, utils.get_variable(action, requires_grad=False)
             )
             arc_seq.append(action[:, 0])
 
             sample_log_probs.append(selected_log_prob[:, 0])
             entropy = selected_log_prob[:, 0] * torch.exp(-selected_log_prob[:, 0])
             sample_entropy.append(entropy)
-            input = self.w_emb.weight.data[action[:, 0]]
+            inputs = self.w_emb.weight.data[action[:, 0]]
 
         arc_seq = torch.cat(arc_seq, 0)
-        self.sample_arc = arc_seq
-
-        self.sample_log_probs = torch.cat(sample_log_probs, 0)
-        self.ppl = torch.exp(torch.reduce_mean(self.sample_log_probs))
-
-        sample_entropy = torch.cat(sample_entropy, 0)
-        self.sample_entropy = torch.reduce_sum(sample_entropy)
-
-        self.all_h = all_h
+        # self.sample_arc = arc_seq
+        #
+        # self.sample_log_probs = torch.cat(sample_log_probs, 0)
+        # self.ppl = torch.exp(torch.reduce_mean(self.sample_log_probs))
+        #
+        # sample_entropy = torch.cat(sample_entropy, 0)
+        # self.sample_entropy = torch.reduce_sum(sample_entropy)
+        #
+        # self.all_h = all_h
         return arc_seq, sample_log_probs, sample_entropy

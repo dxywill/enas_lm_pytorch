@@ -338,8 +338,10 @@ class RNN(models.shared_base.SharedModel):
             top_s = self.lockdrop(top_s, self.args.drop_o)
 
         # prev_s = out_s
+        top_s = torch.stack(top_s)
+        top_s = top_s.permute(1, 0, 2)
         # Fix this
-        logits = torch.einsum('bnh,vh->bnv', top_s, self.embeddings.weight.data)
+        logits = torch.einsum('bnh,vh->bnv', top_s, self.encoder.weight.data)
 
         # loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y,
         #                                                     logits=logits)
@@ -360,7 +362,7 @@ class RNN(models.shared_base.SharedModel):
         #             (all_s[:, 1:, :] - all_s[:, :-1, :]) ** 2)
 
 
-        return logits
+        return logits, all_s
 
     def init_hidden(self, batch_size):
         zeros = torch.zeros(batch_size, self.args.shared_hid)

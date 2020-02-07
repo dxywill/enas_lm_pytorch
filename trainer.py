@@ -241,14 +241,14 @@ class Trainer(object):
 
         loss = 0
         for dag in dags:
-            output, hidden, extra_out = self.shared(inputs, dag, prev_s=hidden)
+            output, hidden = self.shared(inputs, dag, prev_s=hidden)
             output_flat = output.view(-1, self.dataset.num_tokens)
             sample_loss = (self.ce(output_flat, targets) /
                            self.args.shared_num_sample)
             loss += sample_loss
 
         assert len(dags) == 1, 'there are multiple `hidden` for multple `dags`'
-        return loss, hidden, extra_out
+        return loss, hidden
 
     def train_shared(self, max_step=None, dag=None):
         """Train the language model for 400 steps of minibatches of 64
@@ -295,14 +295,14 @@ class Trainer(object):
                                              train_idx,
                                              self.max_length)
 
-            loss, hidden, extra_out = self.get_loss(inputs,
+            loss, hidden = self.get_loss(inputs,
                                                     targets,
                                                     hidden,
                                                     dags)
             hidden.detach_()
             raw_total_loss += loss.data
 
-            loss += _apply_penalties(extra_out, self.args)
+            # loss += _apply_penalties(extra_out, self.args)
 
             # update
             self.shared_optim.zero_grad()

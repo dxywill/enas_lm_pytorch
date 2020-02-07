@@ -22,6 +22,74 @@ def _gen_mask(shape, drop_prob):
     mask = torch.floor(mask + keep_prob) / keep_prob
     return mask
 
+class EmbeddingDropout(torch.nn.Embedding):
+    """Class for dropping out embeddings by zero'ing out parameters in the
+    embedding matrix.
+
+    This is equivalent to dropping out particular words, e.g., in the sentence
+    'the quick brown fox jumps over the lazy dog', dropping out 'the' would
+    lead to the sentence '### quick brown fox jumps over ### lazy dog' (in the
+    embedding vector space).
+
+    See 'A Theoretically Grounded Application of Dropout in Recurrent Neural
+    Networks', (Gal and Ghahramani, 2016).
+    """
+    def __init__(self,
+                 num_embeddings,
+                 embedding_dim,
+                 max_norm=None,
+                 norm_type=2,
+                 scale_grad_by_freq=False,
+                 sparse=False,
+                 dropout=0.1,
+                 scale=None):
+        """Embedding constructor.
+
+        Args:
+            dropout: Dropout probability.
+            scale: Used to scale parameters of embedding weight matrix that are
+                not dropped out. Note that this is _in addition_ to the
+                `1/(1 - dropout)` scaling.
+
+        See `torch.nn.Embedding` for remaining arguments.
+        """
+        torch.nn.Embedding.__init__(self,
+                                    num_embeddings=num_embeddings,
+                                    embedding_dim=embedding_dim,
+                                    max_norm=max_norm,
+                                    norm_type=norm_type,
+                                    scale_grad_by_freq=scale_grad_by_freq,
+                                    sparse=sparse)
+        self.dropout = dropout
+        assert (dropout >= 0.0) and (dropout < 1.0), ('Dropout must be >= 0.0 '
+                                                      'and < 1.0')
+        self.scale = scale
+
+    def forward(self, inputs):  # pylint:disable=arguments-differ
+        """Embeds `inputs` with the dropped out embedding weight matrix."""
+        if self.training:
+            dropout = self.dropout
+        else:
+            dropout = 0
+
+        if dropout:
+            mask = self.weight.data.new(self.weight.size(0), 1)
+            mask.bernoulli_(1 - dropout)
+            mask = mask.expand_as(self.weight)
+            mask = mask / (1 - dropout)
+            masked_weight = self.weight * Variable(mask)
+        else:
+            masked_weight = self.weight
+        if self.scale and self.scale != 1:
+            masked_weight = masked_weight * self.scale
+
+        return F.embedding(inputs,
+                           masked_weight,
+                           max_norm=self.max_norm,
+                           norm_type=self.norm_type,
+                           scale_grad_by_freq=self.scale_grad_by_freq,
+                           sparse=self.sparse)
+
 class LockedDropout(nn.Module):
     # code from https://github.com/salesforce/awd-lstm-lm/blob/master/locked_dropout.py
     def __init__(self):
@@ -77,8 +145,9 @@ class RNN(models.shared_base.SharedModel):
         num_func = args.controller_num_functions
 
         self.decoder = nn.Linear(args.shared_hid, corpus.num_tokens)
-        self.embeddings = nn.Embedding(corpus.num_tokens,
-                                        args.shared_embed)
+        self.encoder = EmbeddingDropout(corpus.num_tokens,
+                                        args.shared_embed,
+                                        dropout=args.shared_dropoute)
         self.lockdrop = LockedDropout()
         self.w_prev = nn.Linear(hidden_size * 2, hidden_size * 2)
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
@@ -139,8 +208,7 @@ class RNN(models.shared_base.SharedModel):
         #
         # logger.info(f'# of parameters: {format(self.num_parameters, ",d")}')
 
-    def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask,
-                params):
+    def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask):
         """Multi-layer LSTM.
 
         Args:
@@ -157,22 +225,22 @@ class RNN(models.shared_base.SharedModel):
             next_s: [batch_size, hidden_size].
             all_s: [[batch_size, num_steps, hidden_size] * num_layers].
         """
-        batch_size = x.size()[0]
-        num_steps = x.size()[1]
+        batch_size = x.size()[1]
+        num_steps = x.size()[0]
         num_layers = len(sample_arc) // 2
 
         all_s = []
 
         # extract the relevant variables, so that you only do L2-reg on them.
-        u_skip = []
-        start_idx = 0
-        for layer_id in range(num_layers):
-            prev_idx = sample_arc[start_idx]
-            func_idx = sample_arc[start_idx + 1]
-            u_skip.append(self.w_combined[prev_idx][layer_id][func_idx])
-            start_idx += 2
-        w_skip = u_skip
-        var_s = [self.w_prev] + w_skip[1:]
+        # u_skip = []
+        # start_idx = 0
+        # for layer_id in range(1, num_layers):
+        #     prev_idx = sample_arc[start_idx]
+        #     func_idx = sample_arc[start_idx + 1]
+        #     u_skip.append(self.w_combined[prev_idx][layer_id][func_idx])
+        #     start_idx += 2
+        # w_skip = u_skip
+        # var_s = [self.w_prev] + w_skip[1:]
 
         def _select_function(h, function_id):
             h = torch.stack([F.tanh(h), F.relu(h), F.sigmoid(h), h], dim=0)
@@ -183,7 +251,7 @@ class RNN(models.shared_base.SharedModel):
         while step < num_steps:
 
             """Body function."""
-            inp = x[:, step, :]
+            inp = x[step, :]
 
             # important change: first input uses a tanh()
             if layer_mask is not None:
@@ -192,7 +260,7 @@ class RNN(models.shared_base.SharedModel):
                                             dim=1))
             else:
                 ht = self.w_prev(torch.cat([inp, prev_s], dim=1))
-            h, t = torch.split(ht, 2, dim=1)
+            h, t = torch.split(ht, self.args.shared_hid, dim=1)
             h = F.tanh(h)
             t = F.sigmoid(t)
             s = prev_s + t * (h - prev_s)
@@ -200,26 +268,27 @@ class RNN(models.shared_base.SharedModel):
 
             start_idx = 0
             used = []
-            for layer_id in range(num_layers):
-                prev_idx = sample_arc[start_idx]
-                func_idx = sample_arc[start_idx + 1]
+            for layer_id in range(1, num_layers):
+                prev_idx = sample_arc[start_idx].item()
+                func_idx = sample_arc[start_idx + 1].item()
                 # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
                 prev_s = torch.stack(layers, dim=0)[prev_idx]
                 if layer_mask is not None:
                     ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s * layer_mask)
                 else:
                     ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s)
-                h, t = torch.split(ht, 2, dim=1)
+                h, t = torch.split(ht, self.args.shared_hid, dim=1)
 
                 h = _select_function(h, func_idx)
                 t = F.sigmoid(t)
                 s = prev_s + t * (h - prev_s)
                 # s.set_shape([batch_size, self.hidden_size])
-                s = s.view(batch_size, self.hidden_size)
+                # s = s.view(batch_size, self.hidden_size)
                 layers.append(s)
                 start_idx += 2
 
-            next_s = torch.sum(layers[1:], dim=0) / num_layers
+            t_layers = torch.stack(layers[1:]),
+            next_s = torch.sum(t_layers[0],  dim=0) / num_layers
             all_s.append(next_s)
 
             prev_s = next_s
@@ -227,9 +296,9 @@ class RNN(models.shared_base.SharedModel):
 
         # all_s = tf.transpose(all_s.stack(), [1, 0, 2])
 
-        return next_s, all_s, var_s
+        return next_s, all_s, all_s
 
-    def forward(self, x, sample_arc, is_training=False):
+    def forward(self, x, sample_arc, prev_s, is_training=False):
         """Computes the logits.
 
         Args:
@@ -242,11 +311,10 @@ class RNN(models.shared_base.SharedModel):
         Returns:
             loss: scalar, cross-entropy loss
         """
-
-        emb = self.embeddings(x)
-        batch_size = self.params.batch_size
-        hidden_size = self.params.hidden_size
-        prev_s = self.init_hidden(batch_size)
+        emb = self.encoder(x)
+        batch_size = self.args.batch_size
+        hidden_size = self.args.shared_hid
+        #prev_s = self.init_hidden(batch_size)
 
         if is_training:
             # emb = tf.layers.dropout(
@@ -260,7 +328,7 @@ class RNN(models.shared_base.SharedModel):
             layer_mask = None
 
         out_s, all_s, var_s = self._rnn_fn(sample_arc, emb, prev_s,
-                                        input_mask, layer_mask, params=self.params)
+                                        input_mask, layer_mask)
 
         top_s = all_s
         if is_training:
@@ -270,6 +338,7 @@ class RNN(models.shared_base.SharedModel):
             top_s = self.lockdrop(top_s, self.args.drop_o)
 
         # prev_s = out_s
+        # Fix this
         logits = torch.einsum('bnh,vh->bnv', top_s, self.embeddings.weight.data)
 
         # loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y,

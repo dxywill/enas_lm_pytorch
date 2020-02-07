@@ -241,7 +241,7 @@ class Trainer(object):
 
         loss = 0
         for dag in dags:
-            output, hidden, extra_out = self.shared(inputs, dag, hidden=hidden)
+            output, hidden, extra_out = self.shared(inputs, dag, prev_s=hidden)
             output_flat = output.view(-1, self.dataset.num_tokens)
             sample_loss = (self.ce(output_flat, targets) /
                            self.args.shared_num_sample)
@@ -286,7 +286,10 @@ class Trainer(object):
             if step > max_step:
                 break
 
-            dags = dag if dag else self.controller.sample(
+            if dag:
+                dags = dag
+            else:
+                dags, sample_log_probs, sample_entropy = self.controller.sample(
                 self.args.shared_num_sample)
             inputs, targets = self.get_batch(self.train_data,
                                              train_idx,

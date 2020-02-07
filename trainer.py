@@ -299,7 +299,7 @@ class Trainer(object):
                                                     targets,
                                                     hidden,
                                                     dags)
-            hidden.detach_()
+            hidden = hidden[-1].detach_()
             raw_total_loss += loss.data
 
             # loss += _apply_penalties(extra_out, self.args)
@@ -308,13 +308,13 @@ class Trainer(object):
             self.shared_optim.zero_grad()
             loss.backward()
 
-            h1tohT = extra_out['hiddens']
-            new_abs_max_hidden_norm = utils.to_item(
-                h1tohT.norm(dim=-1).data.max())
-            if new_abs_max_hidden_norm > abs_max_hidden_norm:
-                abs_max_hidden_norm = new_abs_max_hidden_norm
-                logger.info(f'max hidden {abs_max_hidden_norm}')
-            abs_max_grad = _check_abs_max_grad(abs_max_grad, model)
+            # h1tohT = extra_out['hiddens']
+            # new_abs_max_hidden_norm = utils.to_item(
+            #     h1tohT.norm(dim=-1).data.max())
+            # if new_abs_max_hidden_norm > abs_max_hidden_norm:
+            #     abs_max_hidden_norm = new_abs_max_hidden_norm
+            #     logger.info(f'max hidden {abs_max_hidden_norm}')
+            # abs_max_grad = _check_abs_max_grad(abs_max_grad, model)
             torch.nn.utils.clip_grad_norm(model.parameters(),
                                           self.args.shared_grad_clip)
             self.shared_optim.step()
@@ -341,7 +341,7 @@ class Trainer(object):
                                          valid_idx,
                                          self.max_length,
                                          volatile=True)
-        valid_loss, hidden, _ = self.get_loss(inputs, targets, hidden, dag)
+        valid_loss, hidden = self.get_loss(inputs, targets, hidden, dag)
         valid_loss = utils.to_item(valid_loss.data)
 
         valid_ppl = math.exp(valid_loss)
@@ -479,10 +479,9 @@ class Trainer(object):
         pbar = range(0, data.size(0) - 1, self.max_length)
         for count, idx in enumerate(pbar):
             inputs, targets = self.get_batch(data, idx, volatile=True)
-            output, hidden, _ = self.shared(inputs,
+            output, hidden = self.shared(inputs,
                                             dag,
-                                            hidden=hidden,
-                                            is_train=False)
+                                            hidden=hidden)
             output_flat = output.view(-1, self.dataset.num_tokens)
             total_loss += len(inputs) * self.ce(output_flat, targets).data
             hidden.detach_()

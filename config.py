@@ -150,6 +150,14 @@ extra_arg.add_argument('--controller_entropy_weight', type=float, default=1e-5)
 extra_arg.add_argument('--controller_baseline_dec', type=float, default=0.999)
 
 
+extra_arg.add_argument('--drop_e', type=float, default=0.10)  # word
+extra_arg.add_argument('--drop_i', type=float, default=0.20)  # embeddings
+extra_arg.add_argument('--drop_x', type=float, default=0.75)  # input to RNN cells
+extra_arg.add_argument('--drop_l', type=float, default=0.25)  # between layers
+extra_arg.add_argument('--drop_o', type=float, default=0.75)  # output
+extra_arg.add_argument('--drop_w', type=float, default=0.00)  # weight
+
+
 
 def get_args():
     """Parses all of the arguments above, which mostly correspond to the

@@ -124,15 +124,15 @@ class Trainer(object):
         self.shared_step = 0
         self.start_epoch = 0
 
-        logger.info('regularizing:')
-        for regularizer in [('activation regularization',
-                             self.args.activation_regularization),
-                            ('temporal activation regularization',
-                             self.args.temporal_activation_regularization),
-                            ('norm stabilizer regularization',
-                             self.args.norm_stabilizer_regularization)]:
-            if regularizer[1]:
-                logger.info(f'{regularizer[0]}')
+        # logger.info('regularizing:')
+        # for regularizer in [('activation regularization',
+        #                      self.args.activation_regularization),
+        #                     ('temporal activation regularization',
+        #                      self.args.temporal_activation_regularization),
+        #                     ('norm stabilizer regularization',
+        #                      self.args.norm_stabilizer_regularization)]:
+        #     if regularizer[1]:
+        #         logger.info(f'{regularizer[0]}')
 
         self.train_data = utils.batchify(dataset.train,
                                          args.batch_size,
@@ -204,11 +204,12 @@ class Trainer(object):
             single (bool): If True it won't train the controller and use the
                            same dag instead of derive().
         """
-        dag = utils.load_dag(self.args) if single else None
+        # dag = utils.load_dag(self.args) if single else None
+        dag = None
         
-        if self.args.shared_initial_step > 0:
-            self.train_shared(self.args.shared_initial_step)
-            self.train_controller()
+        # if self.args.shared_initial_step > 0:
+        #     self.train_shared(self.args.shared_initial_step)
+        #     self.train_controller()
 
         for self.epoch in range(self.start_epoch, self.args.max_epoch):
             # 1. Training the shared parameters omega of the child models
@@ -230,7 +231,7 @@ class Trainer(object):
             if self.epoch >= self.args.shared_decay_after:
                 utils.update_lr(self.shared_optim, self.shared_lr)
 
-    def get_loss(self, inputs, targets, hidden, dags):
+    def get_loss(self, inputs, targets, hidden, dags, is_training=True):
         """Computes the loss for the same batch for M models.
 
         This amounts to an estimate of the loss, which is turned into an
@@ -241,7 +242,7 @@ class Trainer(object):
 
         loss = 0
         for dag in dags:
-            output, hidden = self.shared(inputs, dag, prev_s=hidden)
+            output, hidden = self.shared(inputs, dag, prev_s=hidden, is_training=is_training)
             output_flat = output.view(-1, self.dataset.num_tokens)
             sample_loss = (self.ce(output_flat, targets) /
                            self.args.shared_num_sample)
@@ -341,7 +342,7 @@ class Trainer(object):
                                          valid_idx,
                                          self.max_length,
                                          volatile=True)
-        valid_loss, hidden = self.get_loss(inputs, targets, hidden, dag)
+        valid_loss, hidden = self.get_loss(inputs, targets, hidden, dag, is_training=False)
         valid_loss = utils.to_item(valid_loss.data)
 
         valid_ppl = math.exp(valid_loss)
@@ -404,6 +405,7 @@ class Trainer(object):
                                                   hidden,
                                                   valid_idx)
 
+            hidden = hidden[-1].detach_()
             # discount
             if 1 > self.args.discount > 0:
                 rewards = discount(rewards, self.args.discount)
@@ -655,7 +657,7 @@ class Trainer(object):
                 fname = (f'{self.epoch:03d}-{self.controller_step:06d}-'
                          f'{avg_reward:6.4f}.png')
                 path = os.path.join(self.args.model_dir, 'networks', fname)
-                utils.draw_network(dag, path)
+                # utils.draw_network(dag, path)
                 paths.append(path)
 
             self.tb.image_summary('controller/sample',

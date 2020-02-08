@@ -22,10 +22,15 @@ class Controller(torch.nn.Module):
     def __init__(self, args):
         torch.nn.Module.__init__(self)
         self.args = args
+        if self.args.cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
         hidden_size = args.controller_hidden_size
         num_funcs = args.controller_num_functions
         #self.g_emb = nn.Linear(1, hidden_size)
-        self.g_emb = torch.zeros([1, hidden_size], dtype=torch.float32)
+        self.g_emb = torch.zeros([1, hidden_size], dtype=torch.float32, device=self.device)
         self.w_emb = nn.Linear(hidden_size, num_funcs)
         # self.w_emb =
         self.attention_w_1 = nn.Linear(hidden_size, hidden_size)
@@ -68,12 +73,12 @@ class Controller(torch.nn.Module):
         arc_seq = []
         sample_log_probs = []
         sample_entropy = []
-        all_h = [torch.zeros([1, hidden_size], dtype=torch.float32)]
-        all_h_w = [torch.zeros([1, hidden_size], dtype=torch.float32)]
+        all_h = [torch.zeros([1, hidden_size], dtype=torch.float32, device=self.device)]
+        all_h_w = [torch.zeros([1, hidden_size], dtype=torch.float32, device=self.device)]
 
         inputs = self.g_emb
-        prev_c = torch.zeros([1, hidden_size], dtype=torch.float32)
-        prev_h = torch.zeros([1, hidden_size], dtype=torch.float32)
+        prev_c = torch.zeros([1, hidden_size], dtype=torch.float32, device=self.device)
+        prev_h = torch.zeros([1, hidden_size], dtype=torch.float32, device=self.device)
 
 
         for layer_id in range(1, num_layers + 1):
@@ -97,7 +102,7 @@ class Controller(torch.nn.Module):
                 logits = self.args.controller_tanh_constant * torch.tanh(logits)
 
             diff = (layer_id - torch.arange(0, layer_id)) ** 2
-            diff  = diff.float()
+            diff  = diff.float().to(self.device)
             logits -= torch.reshape(diff, [1, layer_id]) / 6.0
 
             #

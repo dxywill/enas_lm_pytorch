@@ -139,6 +139,10 @@ class RNN(models.shared_base.SharedModel):
 
         self.args = args
         self.corpus = corpus
+        if self.args.cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
 
         hidden_size = args.shared_hid
         num_layers = args.controller_num_layers
@@ -187,7 +191,7 @@ class RNN(models.shared_base.SharedModel):
                                                    bias=False)
                     self.w_combined[idx][jdx].append(nn.Linear(args.shared_hid,
                                                    args.shared_hid * 2,
-                                                   bias=False))
+                                                   bias=False).to(self.device))
 
 
         # self._w_h = nn.ModuleList([self.w_h[idx][jdx]
@@ -321,8 +325,8 @@ class RNN(models.shared_base.SharedModel):
             #         emb, self.params.drop_i, [batch_size, 1, hidden_size], training=True)
             emb  = self.lockdrop(emb, self.args.drop_i)
 
-            input_mask = _gen_mask([batch_size, hidden_size], self.args.drop_x)
-            layer_mask = _gen_mask([batch_size, hidden_size], self.args.drop_l)
+            input_mask = _gen_mask([batch_size, hidden_size], self.args.drop_x).to(self.device)
+            layer_mask = _gen_mask([batch_size, hidden_size], self.args.drop_l).to(self.device)
         else:
             input_mask = None
             layer_mask = None

@@ -117,6 +117,10 @@ class Trainer(object):
             - Criticism: cross-entropy loss for training the shared model.
         """
         self.args = args
+        if self.args.cuda:
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
         self.controller_step = 0
         self.cuda = args.cuda
         self.dataset = dataset
@@ -483,10 +487,11 @@ class Trainer(object):
             inputs, targets = self.get_batch(data, idx, volatile=True)
             output, hidden = self.shared(inputs,
                                             dag,
-                                            hidden=hidden)
+                                            prev_s=hidden,
+                                            is_training=False)
             output_flat = output.view(-1, self.dataset.num_tokens)
             total_loss += len(inputs) * self.ce(output_flat, targets).data
-            hidden.detach_()
+            hidden = hidden[-1].detach_()
             ppl = math.exp(utils.to_item(total_loss) / (count + 1) / self.max_length)
 
         val_loss = utils.to_item(total_loss) / len(data)
@@ -508,6 +513,7 @@ class Trainer(object):
         dags, _, entropies = self.controller.sample(sample_num,
                                                     with_details=True)
 
+        dags = [dags] # only one sample for now
         max_R = 0
         best_dag = None
         for dag in dags:
@@ -520,8 +526,8 @@ class Trainer(object):
         fname = (f'{self.epoch:03d}-{self.controller_step:06d}-'
                  f'{max_R:6.4f}-best.png')
         path = os.path.join(self.args.model_dir, 'networks', fname)
-        utils.draw_network(best_dag, path)
-        self.tb.image_summary('derive/best', [path], self.epoch)
+        #utils.draw_network(best_dag, path)
+        #self.tb.image_summary('derive/best', [path], self.epoch)
 
         return best_dag
 
@@ -660,9 +666,9 @@ class Trainer(object):
                 # utils.draw_network(dag, path)
                 paths.append(path)
 
-            self.tb.image_summary('controller/sample',
-                                  paths,
-                                  self.controller_step)
+            # self.tb.image_summary('controller/sample',
+            #                       paths,
+            #                       self.controller_step)
 
     def _summarize_shared_train(self, total_loss, raw_total_loss):
         """Logs a set of training steps."""

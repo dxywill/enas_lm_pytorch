@@ -145,8 +145,8 @@ class RNN(models.shared_base.SharedModel):
             self.device = torch.device('cpu')
 
         hidden_size = args.shared_hid
-        num_layers = args.controller_num_layers
-        num_func = args.controller_num_functions
+        self.num_layers = args.controller_num_layers
+        self.num_func = args.controller_num_functions
 
         self.decoder = nn.Linear(args.shared_hid, corpus.num_tokens)
         self.encoder = EmbeddingDropout(corpus.num_tokens,
@@ -154,6 +154,14 @@ class RNN(models.shared_base.SharedModel):
                                         dropout=args.shared_dropoute)
         self.lockdrop = LockedDropout()
         self.w_prev = nn.Linear(hidden_size * 2, hidden_size * 2)
+
+        i_mask = torch.ones(hidden_size, 2 * hidden_size)
+        i_mask =  utils.get_variable(i_mask, self.args.cuda, requires_grad=False)
+        h_mask = _gen_mask([hidden_size, 2 * hidden_size], self.args.drop_w).to(self.device)
+
+        self.w_prev_mask = torch.cat([i_mask, h_mask], dim=0)
+        self.weight_mask = _gen_mask([hidden_size * 2, hidden_size], self.args.drop_w).to(self.device)
+
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
 
         # if self.args.tie_weights:
@@ -174,26 +182,26 @@ class RNN(models.shared_base.SharedModel):
         # self.w_hc = None
         # self.w_hh = None
 
-        self.w_h = collections.defaultdict(dict)
-        self.w_c = collections.defaultdict(dict)
+        # self.w_h = collections.defaultdict(dict)
+        # self.w_c = collections.defaultdict(dict)
 
         self.w_combined = collections.defaultdict(dict)
 
-        for idx in range(num_layers):
-            for jdx in range(idx + 1, num_layers):
+        for idx in range(self.num_layers):
+            for jdx in range(idx + 1, self.num_layers):
                 self.w_combined[idx][jdx] = []
-                for f in range(num_func):
-                    self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
-                                                   args.shared_hid,
-                                                   bias=False)
-                    self.w_c[idx][jdx] = nn.Linear(args.shared_hid,
-                                                   args.shared_hid,
-                                                   bias=False)
+                for f in range(self.num_func):
+                    # self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
+                    #                                args.shared_hid,
+                    #                                bias=False)
+                    # self.w_c[idx][jdx] = nn.Linear(args.shared_hid,
+                    #                                args.shared_hid,
+                    #                                bias=False)
                     self.w_combined[idx][jdx].append(nn.Linear(args.shared_hid,
                                                    args.shared_hid * 2,
                                                    bias=False).to(self.device))
 
-
+        self.init_weights()
         # self._w_h = nn.ModuleList([self.w_h[idx][jdx]
         #                            for idx in self.w_h
         #                            for jdx in self.w_h[idx]])
@@ -211,6 +219,22 @@ class RNN(models.shared_base.SharedModel):
         # self.static_init_hidden = utils.keydefaultdict(self.init_hidden)
         #
         # logger.info(f'# of parameters: {format(self.num_parameters, ",d")}')
+
+
+    def init_weights(self):
+        initrange = 0.01
+        #self.encoder.weight.data.uniform_(-initrange, initrange)
+
+        self.decoder.bias.data.zero_()
+        self.decoder.weight.data.uniform_(-initrange, initrange)
+
+        self.w_prev.bias.data.zero_()
+        self.w_prev.weight.data.uniform_(-initrange, initrange)
+
+        for idx in range(self.num_layers):
+            for jdx in range(idx + 1, self.num_layers):
+                for f in range(self.num_func):
+                    self.w_combined[idx][jdx][f].weight.data.uniform_(-initrange, initrange)
 
     def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask):
         """Multi-layer LSTM.
@@ -260,6 +284,7 @@ class RNN(models.shared_base.SharedModel):
             # important change: first input uses a tanh()
             if layer_mask is not None:
                 assert input_mask is not None
+                # self.w_prev.weight.data = self.w_prev.weight.data * self.w_prev_mask
                 ht = self.w_prev(torch.cat([inp * input_mask, prev_s * layer_mask],
                                             dim=1))
             else:
@@ -278,7 +303,10 @@ class RNN(models.shared_base.SharedModel):
                 # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
                 prev_s = torch.stack(layers, dim=0)[prev_idx]
                 if layer_mask is not None:
+                    # self.w_combined[prev_idx][layer_id][func_idx].weight.data =\
+                    #     self.w_combined[prev_idx][layer_id][func_idx].weight.data * self.weight_mask
                     ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s * layer_mask)
+
                 else:
                     ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s)
                 h, t = torch.split(ht, self.args.shared_hid, dim=1)
@@ -349,20 +377,6 @@ class RNN(models.shared_base.SharedModel):
         #                                                     logits=logits)
         # loss = self.loss_fn(logits, y)
         #loss = torch.reduce_mean(loss)
-
-        # reg_loss = loss  # `loss + regularization_terms` is for training only
-        # if is_training:
-        #     # L2 weight reg
-        #     self.l2_reg_loss = tf.add_n([tf.nn.l2_loss(w ** 2) for w in var_s])
-        #     reg_loss += self.params.weight_decay * self.l2_reg_loss
-        #
-        #     # activation L2 reg
-        #     reg_loss += self.params.alpha * tf.reduce_mean(all_s ** 2)
-        #
-        #     # activation slowness reg
-        #     reg_loss += self.params.beta * tf.reduce_mean(
-        #             (all_s[:, 1:, :] - all_s[:, :-1, :]) ** 2)
-
 
         return logits, all_s
 

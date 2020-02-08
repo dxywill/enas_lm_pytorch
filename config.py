@@ -37,8 +37,6 @@ net_arg.add_argument('--shared_hid', type=int, default=1000)
 net_arg.add_argument('--shared_rnn_max_length', type=int, default=35)
 net_arg.add_argument('--shared_rnn_activations', type=eval,
                      default="['tanh', 'ReLU', 'identity', 'sigmoid']")
-net_arg.add_argument('--shared_cnn_types', type=eval,
-                     default="['3x3', '5x5', 'sep 3x3', 'sep 5x5', 'max 3x3', 'max 5x5']")
 
 # PTB regularizations
 net_arg.add_argument('--activation_regularization',
@@ -94,7 +92,7 @@ learn_arg.add_argument('--discount', type=float, default=1.0) # TODO
 learn_arg.add_argument('--controller_max_step', type=int, default=2000,
                        help='step for controller parameters')
 learn_arg.add_argument('--controller_optim', type=str, default='adam')
-learn_arg.add_argument('--controller_lr', type=float, default=3.5e-4,
+learn_arg.add_argument('--controller_lr', type=float, default=5e-5,
                        help="will be ignored if --controller_lr_cosine=True")
 learn_arg.add_argument('--controller_lr_cosine', type=str2bool, default=False)
 learn_arg.add_argument('--controller_lr_max', type=float, default=0.05,

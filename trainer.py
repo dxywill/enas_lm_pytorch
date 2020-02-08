@@ -359,7 +359,7 @@ class Trainer(object):
             R = self.args.reward_c / valid_ppl
 
         if self.args.entropy_mode == 'reward':
-            rewards = R + self.args.entropy_coeff * entropies
+            rewards = R + self.args.controller_entropy_weight * entropies
         elif self.args.entropy_mode == 'regularizer':
             rewards = R * np.ones_like(entropies)
         else:
@@ -409,10 +409,11 @@ class Trainer(object):
                                                   hidden,
                                                   valid_idx)
 
-            hidden = hidden[-1].detach_()
+            hidden = hidden[-1].detach_() # should we reset immediately? like below
+            #hidden = self.shared.init_hidden(self.args.batch_size)
             # discount
-            if 1 > self.args.discount > 0:
-                rewards = discount(rewards, self.args.discount)
+            # if 1 > self.args.discount > 0:
+            #     rewards = discount(rewards, self.args.discount)
 
             reward_history.extend(rewards)
             entropy_history.extend(np_entropies)

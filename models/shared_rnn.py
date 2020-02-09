@@ -278,11 +278,8 @@ class RNN(models.shared_base.SharedModel):
             next_s: [batch_size, hidden_size].
             all_s: [[batch_size, num_steps, hidden_size] * num_layers].
         """
-        batch_size = x.size()[1]
-        num_steps = x.size()[0]
         num_layers = len(sample_arc) // 2
 
-        all_s = []
 
         # extract the relevant variables, so that you only do L2-reg on them.
         # u_skip = []
@@ -300,95 +297,49 @@ class RNN(models.shared_base.SharedModel):
             h = h[function_id]
             return h
 
-        step = 0
-        clipped_num = 0
-        max_clipped_norm = 0
+        """Body function."""
+        # important change: first input uses a tanh()
+        if layer_mask is not None:
+            assert input_mask is not None
+            # self.w_prev.weight.data = self.w_prev.weight.data * self.w_prev_mask
+            ht = self.w_prev(torch.cat([x * input_mask, prev_s * layer_mask],
+                                        dim=1))
+        else:
+            ht = self.w_prev(torch.cat([x, prev_s], dim=1))
+        h, t = torch.split(ht, self.args.shared_hid, dim=1)
+        h = F.tanh(h)
+        t = F.sigmoid(t)
+        s = prev_s + t * (h - prev_s)
+        layers = [s]
 
-        while step < num_steps:
-
-            # hidden_norms = prev_s.norm(dim=-1)
-            # max_norm = 25.0
-            # if hidden_norms.data.max() > max_norm:
-            #     # TODO(brendan): Just directly use the torch slice operations
-            #     # in PyTorch v0.4.
-            #     #
-            #     # This workaround for PyTorch v0.3.1 does everything in numpy,
-            #     # because the PyTorch slicing and slice assignment is too
-            #     # flaky.
-            #     hidden_norms = hidden_norms.data.cpu().numpy()
-            #
-            #     clipped_num += 1
-            #     if hidden_norms.max() > max_clipped_norm:
-            #         max_clipped_norm = hidden_norms.max()
-            #
-            #     clip_select = hidden_norms > max_norm
-            #     clip_norms = hidden_norms[clip_select]
-            #
-            #     mask = np.ones(prev_s.size())
-            #     normalizer = max_norm / clip_norms
-            #     normalizer = normalizer[:, np.newaxis]
-            #
-            #     mask[clip_select] = normalizer
-            #     prev_s *= torch.autograd.Variable(
-            #         torch.FloatTensor(mask).cuda(), requires_grad=False)
-            #
-            # if clipped_num > 0:
-            #     logger.info(f'clipped {clipped_num} hidden states in one forward '
-            #                 f'pass. '
-            #                 f'max clipped hidden state norm: {max_clipped_norm}')
-
-
-            """Body function."""
-            inp = x[step, :]
-
-            # important change: first input uses a tanh()
+        start_idx = 0
+        used = []
+        for layer_id in range(1, num_layers):
+            prev_idx = sample_arc[start_idx].item()
+            func_idx = sample_arc[start_idx + 1].item()
+            # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
+            prev_s = torch.stack(layers, dim=0)[prev_idx]
             if layer_mask is not None:
-                assert input_mask is not None
-                # self.w_prev.weight.data = self.w_prev.weight.data * self.w_prev_mask
-                ht = self.w_prev(torch.cat([inp * input_mask, prev_s * layer_mask],
-                                            dim=1))
+                # self.w_combined[prev_idx][layer_id][func_idx].weight.data =\
+                #     self.w_combined[prev_idx][layer_id][func_idx].weight.data * self.weight_mask
+                ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s * layer_mask)
+
             else:
-                ht = self.w_prev(torch.cat([inp, prev_s], dim=1))
+                ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s)
             h, t = torch.split(ht, self.args.shared_hid, dim=1)
-            h = F.tanh(h)
+
+            h = _select_function(h, func_idx)
             t = F.sigmoid(t)
             s = prev_s + t * (h - prev_s)
-            layers = [s]
+            # s.set_shape([batch_size, self.hidden_size])
+            # s = s.view(batch_size, self.hidden_size)
+            layers.append(s)
+            start_idx += 2
 
-            start_idx = 0
-            used = []
-            for layer_id in range(1, num_layers):
-                prev_idx = sample_arc[start_idx].item()
-                func_idx = sample_arc[start_idx + 1].item()
-                # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
-                prev_s = torch.stack(layers, dim=0)[prev_idx]
-                if layer_mask is not None:
-                    # self.w_combined[prev_idx][layer_id][func_idx].weight.data =\
-                    #     self.w_combined[prev_idx][layer_id][func_idx].weight.data * self.weight_mask
-                    ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s * layer_mask)
+        t_layers = torch.stack(layers[1:]),
+        next_s = torch.sum(t_layers[0],  dim=0) / num_layers
 
-                else:
-                    ht = self.w_combined[prev_idx][layer_id][func_idx](prev_s)
-                h, t = torch.split(ht, self.args.shared_hid, dim=1)
-
-                h = _select_function(h, func_idx)
-                t = F.sigmoid(t)
-                s = prev_s + t * (h - prev_s)
-                # s.set_shape([batch_size, self.hidden_size])
-                # s = s.view(batch_size, self.hidden_size)
-                layers.append(s)
-                start_idx += 2
-
-            t_layers = torch.stack(layers[1:]),
-            next_s = torch.sum(t_layers[0],  dim=0) / num_layers
-            all_s.append(next_s)
-
-            prev_s = next_s
-            step += 1
-
-        # all_s = tf.transpose(all_s.stack(), [1, 0, 2])
-
-        return next_s, all_s, all_s
+        return next_s
 
     def forward(self, x, sample_arc, prev_s, is_training=True):
         """Computes the logits.
@@ -404,9 +355,17 @@ class RNN(models.shared_base.SharedModel):
             loss: scalar, cross-entropy loss
         """
         emb = self.encoder(x)
+        num_steps = emb.size()[0]
         batch_size = self.args.batch_size
         hidden_size = self.args.shared_hid
         #prev_s = self.init_hidden(batch_size)
+        step = 0
+        hidden = prev_s
+        all_s = []
+
+        clipped_num = 0
+        max_clipped_norm = 0
+
 
         if is_training:
             # emb = tf.layers.dropout(
@@ -419,15 +378,48 @@ class RNN(models.shared_base.SharedModel):
             input_mask = None
             layer_mask = None
 
-        out_s, all_s, var_s = self._rnn_fn(sample_arc, emb, prev_s,
+
+        while step < num_steps:
+
+            # clip hidden
+            hidden_norms = prev_s.norm(dim=-1)
+            max_norm = 25.0
+            if hidden_norms.data.max() > max_norm:
+                # TODO(brendan): Just directly use the torch slice operations
+                # in PyTorch v0.4.
+                #
+                # This workaround for PyTorch v0.3.1 does everything in numpy,
+                # because the PyTorch slicing and slice assignment is too
+                # flaky.
+                hidden_norms = hidden_norms.data.cpu().numpy()
+
+                clipped_num += 1
+                if hidden_norms.max() > max_clipped_norm:
+                    max_clipped_norm = hidden_norms.max()
+
+                clip_select = hidden_norms > max_norm
+                clip_norms = hidden_norms[clip_select]
+
+                mask = np.ones(prev_s.size())
+                normalizer = max_norm / clip_norms
+                normalizer = normalizer[:, np.newaxis]
+
+                mask[clip_select] = normalizer
+                prev_s *= torch.autograd.Variable(
+                    torch.FloatTensor(mask).cuda(), requires_grad=False)
+
+            if clipped_num > 0:
+                logger.info(f'clipped {clipped_num} hidden states in one forward '
+                            f'pass. '
+                            f'max clipped hidden state norm: {max_clipped_norm}')
+
+
+            inp = emb[step,:]
+            hidden = self._rnn_fn(sample_arc, inp, hidden,
                                         input_mask, layer_mask)
+            step += 1
+            all_s.append(hidden)
 
-        # logits, hidden = self._rnn_fn_test(sample_arc, emb, prev_s,
-        #                                 input_mask, layer_mask)
-
-        # top_s = torch.stack(all_s)
-        # top_s = top_s.permute(1, 0, 2)
-        #
         # if is_training:
         #     # top_s = tf.layers.dropout(
         #     #         top_s, self.params.drop_o,
@@ -442,8 +434,6 @@ class RNN(models.shared_base.SharedModel):
         #loss = torch.reduce_mean(loss)
 
         output = torch.stack(all_s)
-
-
         dropped_output = output
 
         decoded = self.decoder(
@@ -451,7 +441,7 @@ class RNN(models.shared_base.SharedModel):
         decoded = decoded.view(output.size(0), output.size(1), decoded.size(1))
 
 
-        return decoded, out_s
+        return decoded, hidden
 
     def init_hidden(self, batch_size):
         zeros = torch.zeros(batch_size, self.args.shared_hid)

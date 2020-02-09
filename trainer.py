@@ -550,9 +550,8 @@ class Trainer(object):
         # https://github.com/pytorch/examples/blob/master/word_language_model/main.py
         length = min(length if length else self.max_length,
                      len(source) - 1 - idx)
-        data = Variable(source[idx:idx + length], volatile=volatile)
-        target = Variable(source[idx + 1:idx + 1 + length].view(-1),
-                          volatile=volatile)
+        data = source[idx:idx + length].clone().detach()
+        target = source[idx + 1:idx + 1 + length].view(-1).clone().detach()
         return data, target
 
     @property

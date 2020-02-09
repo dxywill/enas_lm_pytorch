@@ -42,7 +42,7 @@ class Controller(torch.nn.Module):
 
 
     def init_weights(self):
-        initrange = 0.01
+        initrange = 0.1
         #self.encoder.weight.data.uniform_(-initrange, initrange)
         self.g_emb.data.uniform_(-initrange, initrange)
 
@@ -63,7 +63,7 @@ class Controller(torch.nn.Module):
         pass
 
 
-    def sample(self, batch_size=1, with_details=False, save_dir=None):
+    def sample(self, num_samples=1, batch_size=1, with_details=False, save_dir=None):
         """Samples a architecture
         """
 

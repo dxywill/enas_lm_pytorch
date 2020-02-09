@@ -395,47 +395,51 @@ class Trainer(object):
         total_loss = 0
         valid_idx = 0
         for step in range(self.args.controller_max_step):
-            # sample models
-            dags, log_probs, entropies = self.controller.sample(
-                with_details=True)
+            # sample models, need M=10?
+            loss_avg = []
+            for m in range(10):
+                dags, log_probs, entropies = self.controller.sample(
+                    with_details=True)
 
-            # calculate reward
-            np_entropies = entropies.data.cpu().numpy()
-            # NOTE(brendan): No gradients should be backpropagated to the
-            # shared model during controller training, obviously.
-            with _get_no_grad_ctx_mgr():
-                rewards, hidden = self.get_reward(dags,
-                                                  np_entropies,
-                                                  hidden,
-                                                  valid_idx)
+                # calculate reward
+                np_entropies = entropies.data.cpu().numpy()
+                # NOTE(brendan): No gradients should be backpropagated to the
+                # shared model during controller training, obviously.
+                with _get_no_grad_ctx_mgr():
+                    rewards, hidden = self.get_reward(dags,
+                                                      np_entropies,
+                                                      hidden,
+                                                      valid_idx)
 
-            hidden = hidden[-1].detach_() # should we reset immediately? like below
-            #hidden = self.shared.init_hidden(self.args.batch_size)
-            # discount
-            # if 1 > self.args.discount > 0:
-            #     rewards = discount(rewards, self.args.discount)
+                #hidden = hidden[-1].detach_() # should we reset immediately? like below
+                hidden = self.shared.init_hidden(self.args.batch_size)
+                # discount
+                # if 1 > self.args.discount > 0:
+                #     rewards = discount(rewards, self.args.discount)
 
-            reward_history.extend(rewards)
-            entropy_history.extend(np_entropies)
+                reward_history.extend(rewards)
+                entropy_history.extend(np_entropies)
 
-            # moving average baseline
-            if baseline is None:
-                baseline = rewards
-            else:
-                decay = self.args.ema_baseline_decay
-                baseline = decay * baseline + (1 - decay) * rewards
+                # moving average baseline
+                if baseline is None:
+                    baseline = rewards
+                else:
+                    decay = self.args.ema_baseline_decay
+                    baseline = decay * baseline + (1 - decay) * rewards
 
-            adv = rewards - baseline
-            adv_history.extend(adv)
+                adv = rewards - baseline
+                adv_history.extend(adv)
 
-            # policy loss
-            loss = -log_probs*utils.get_variable(adv,
-                                                 self.cuda,
-                                                 requires_grad=False)
-            if self.args.entropy_mode == 'regularizer':
-                loss -= self.args.entropy_coeff * entropies
-
-            loss = loss.sum()  # or loss.mean()
+                # policy loss
+                loss = -log_probs*utils.get_variable(adv,
+                                                     self.cuda,
+                                                     requires_grad=False)
+                loss_avg.append(loss)
+            # if self.args.entropy_mode == 'regularizer':
+            #     loss -= self.args.entropy_coeff * entropies
+            loss = torch.stack(loss_avg)
+            loss = loss.sum()
+            #loss = loss.sum()  # or loss.mean()
 
             # update
             self.controller_optim.zero_grad()

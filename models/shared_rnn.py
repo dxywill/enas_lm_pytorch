@@ -222,7 +222,7 @@ class RNN(models.shared_base.SharedModel):
 
 
     def init_weights(self):
-        initrange = 0.01
+        initrange = 0.025
         #self.encoder.weight.data.uniform_(-initrange, initrange)
 
         self.decoder.bias.data.zero_()

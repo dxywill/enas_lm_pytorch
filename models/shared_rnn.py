@@ -155,6 +155,13 @@ class RNN(models.shared_base.SharedModel):
         self.lockdrop = LockedDropout()
         self.w_prev = nn.Linear(hidden_size * 2, hidden_size * 2)
 
+        self.w_xc = nn.Linear(hidden_size, hidden_size)
+        self.w_xh = nn.Linear(hidden_size, hidden_size)
+
+        self.w_hc = nn.Linear(hidden_size, hidden_size)
+        self.w_hh = nn.Linear(hidden_size, hidden_size)
+        self.nas_decoder = nn.Linear(hidden_size * 8 , hidden_size)
+
         i_mask = torch.ones(hidden_size, 2 * hidden_size)
         i_mask =  utils.get_variable(i_mask, self.args.cuda, requires_grad=False)
         h_mask = _gen_mask([hidden_size, 2 * hidden_size], self.args.drop_w).to(self.device)
@@ -164,7 +171,15 @@ class RNN(models.shared_base.SharedModel):
 
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
 
-        self.test_lstm = nn.LSTMCell(1000, 1000, bias=False)
+        # self.test_lstm = nn.LSTMCell(1000, 1000, bias=False)
+        # self.w_rnn = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+        #
+        #
+        # self.w_f = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+        # self.w_i = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+        # self.w_o = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+        # self.w_c = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+
         # if self.args.tie_weights:
         #     self.decoder.weight = self.encoder.weight
 
@@ -183,21 +198,23 @@ class RNN(models.shared_base.SharedModel):
         # self.w_hc = None
         # self.w_hh = None
 
-        # self.w_h = collections.defaultdict(dict)
-        # self.w_c = collections.defaultdict(dict)
+        self.w_h = collections.defaultdict(dict)
+        self.w_c = collections.defaultdict(dict)
 
         self.w_combined = collections.defaultdict(dict)
 
         for idx in range(self.num_layers):
             for jdx in range(idx + 1, self.num_layers):
                 self.w_combined[idx][jdx] = []
+                self.w_h[idx][jdx] = []
+                self.w_c[idx][jdx] = []
                 for f in range(self.num_func):
-                    # self.w_h[idx][jdx] = nn.Linear(args.shared_hid,
-                    #                                args.shared_hid,
-                    #                                bias=False)
-                    # self.w_c[idx][jdx] = nn.Linear(args.shared_hid,
-                    #                                args.shared_hid,
-                    #                                bias=False)
+                    self.w_h[idx][jdx].append(nn.Linear(args.shared_hid,
+                                                   args.shared_hid,
+                                                   bias=False).to(self.device))
+                    self.w_c[idx][jdx].append(nn.Linear(args.shared_hid,
+                                                   args.shared_hid,
+                                                   bias=False).to(self.device))
                     self.w_combined[idx][jdx].append(nn.Linear(args.shared_hid,
                                                    args.shared_hid * 2,
                                                    bias=False).to(self.device))
@@ -229,39 +246,59 @@ class RNN(models.shared_base.SharedModel):
         self.decoder.bias.data.zero_()
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
+        self.nas_decoder.data.zero_()
+        self.nas_decoder.weight.data.uniform_(-initrange, initrange)
+
         self.w_prev.bias.data.zero_()
         self.w_prev.weight.data.uniform_(-initrange, initrange)
+
+        self.w_xh.bias.data.zero_()
+        self.w_xh.weight.data.uniform_(-initrange, initrange)
+
+        self.w_xc.bias.data.zero_()
+        self.w_xc.weight.data.uniform_(-initrange, initrange)
+
+        self.w_hh.bias.data.zero_()
+        self.w_hh.weight.data.uniform_(-initrange, initrange)
+
+        self.w_hc.bias.data.zero_()
+        self.w_hc.weight.data.uniform_(-initrange, initrange)
+
+
+
+        # self.w_rnn.weight.data.uniform_(-initrange, initrange)
+        #
+        # self.w_i.weight.data.uniform_(-initrange, initrange)
+        # self.w_o.weight.data.uniform_(-initrange, initrange)
+        # self.w_f.weight.data.uniform_(-initrange, initrange)
+        # self.w_c.weight.data.uniform_(-initrange, initrange)
 
         for idx in range(self.num_layers):
             for jdx in range(idx + 1, self.num_layers):
                 for f in range(self.num_func):
+                    self.w_h[idx][jdx][f].weight.data.uniform_(-initrange, initrange)
+                    self.w_c[idx][jdx][f].weight.data.uniform_(-initrange, initrange)
                     self.w_combined[idx][jdx][f].weight.data.uniform_(-initrange, initrange)
 
-    def _rnn_fn_test(self, sample_arc, x, prev_s, input_mask, layer_mask):
 
-        logits = []
-        h = prev_s
-        c = prev_s
-        step = 0
-        num_steps = x.size()[0]
-        clipped_num = 0
-        max_clipped_norm = 0
+    # def test_rnn(self, x, hidden):
+    #     cat = torch.cat((x, hidden), dim=1)
+    #     cat_2 = self.w_rnn(cat)
+    #     hidden = torch.tanh(cat_2)
+    #     return hidden
+    #
+    # def test_lstm(self, x, hidden):
+    #     h, c = hidden
+    #     f_t = torch.sigmoid(self.w_f(torch.cat((x, h), dim=1)))
+    #     i_t = torch.sigmoid(self.w_i(torch.cat((x, h), dim=1)))
+    #     o_t = torch.sigmoid(self.w_o(torch.cat((x, h), dim=1)))
+    #
+    #     c_hat = torch.tanh(self.w_c(torch.cat((x, h), dim=1)))
+    #     c = c * f_t + i_t * c_hat
+    #     h = o_t * torch.tanh(c)
+    #     return (h ,c)
 
-        while step < num_steps:
-            inp = x[step, :]
-            next_h, next_c = self.test_lstm(inp, (h, c))
-            h = next_h
-            c = next_c
-            logits.append(next_h)
-
-        output = torch.stack(logits)
-        decoded = self.decoder(
-            output.view(output.size(0) * output.size(1), output.size(2)))
-        decoded = decoded.view(output.size(0), output.size(1), decoded.size(1))
-        return decoded, prev_s
-
-
-    def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask):
+    def _nas_cell(self, sample_arc, x, prev_s, input_mask, layer_mask):
         """Multi-layer LSTM.
 
         Args:
@@ -341,6 +378,65 @@ class RNN(models.shared_base.SharedModel):
 
         return next_s
 
+
+    def _nas_cell_s(self, sample_arc, x, h_prev, input_mask, layer_mask):
+        """Multi-layer LSTM.
+
+        Args:
+            sample_arc: [num_layers * 2], sequence of tokens representing architecture.
+            x: [batch_size, num_steps, hidden_size].
+            prev_s: [batch_size, hidden_size].
+            w_prev: [2 * hidden_size, 2 * hidden_size].
+            w_skip: [None, [hidden_size, 2 * hidden_size] * (num_layers-1)].
+            input_mask: `[batch_size, hidden_size]`.
+            layer_mask: `[batch_size, hidden_size]`.
+            params: hyper-params object.
+
+        Returns:
+            next_s: [batch_size, hidden_size].
+            all_s: [[batch_size, num_steps, hidden_size] * num_layers].
+        """
+        num_layers = len(sample_arc) // 2
+
+
+        def _select_function(h, function_id):
+            h = torch.stack([F.tanh(h), F.relu(h), F.sigmoid(h), h], dim=0)
+            h = h[function_id]
+            return h
+
+        """Body function."""
+
+        f = torch.tanh
+        c = F.sigmoid(self.w_xc(x) + self.w_hc(h_prev))
+        h = (c * f(self.w_xh(x) + self.w_hh(h_prev)) +
+                (1 - c) * h_prev)
+
+        layers = [h]
+        start_idx = 0
+
+        for layer_id in range(1, num_layers):
+            prev_idx = sample_arc[start_idx].item()
+            func_idx = sample_arc[start_idx + 1].item()
+            # used.append(tf.one_hot(prev_idx, depth=num_layers, dtype=tf.int32)) not used?
+            prev_s = torch.stack(layers, dim=0)[prev_idx]
+
+            w_h = self.w_h[prev_idx][layer_id][func_idx]
+            w_c = self.w_c[prev_idx][layer_id][func_idx]
+
+            f= self.get_f(func_idx)
+            c = F.sigmoid(w_c(prev_s))
+            h = (c * f(w_h(prev_s)) +
+                          (1 - c) * prev_s)
+
+            layers.append(h)
+            start_idx += 2
+
+        t_layers = torch.stack(layers[1:]),
+        next_s = torch.sum(t_layers[0],  dim=0) / num_layers
+
+        return next_s
+
+
     def forward(self, x, sample_arc, prev_s, is_training=True):
         """Computes the logits.
 
@@ -366,6 +462,8 @@ class RNN(models.shared_base.SharedModel):
         clipped_num = 0
         max_clipped_norm = 0
 
+        h = prev_s
+        c = prev_s
 
         if is_training:
             # emb = tf.layers.dropout(
@@ -382,41 +480,48 @@ class RNN(models.shared_base.SharedModel):
         while step < num_steps:
 
             # clip hidden
-            hidden_norms = prev_s.norm(dim=-1)
-            max_norm = 25.0
-            if hidden_norms.data.max() > max_norm:
-                # TODO(brendan): Just directly use the torch slice operations
-                # in PyTorch v0.4.
-                #
-                # This workaround for PyTorch v0.3.1 does everything in numpy,
-                # because the PyTorch slicing and slice assignment is too
-                # flaky.
-                hidden_norms = hidden_norms.data.cpu().numpy()
+            # hidden_norms = prev_s.norm(dim=-1)
+            # max_norm = 25.0
+            # if hidden_norms.data.max() > max_norm:
+            #     # TODO(brendan): Just directly use the torch slice operations
+            #     # in PyTorch v0.4.
+            #     #
+            #     # This workaround for PyTorch v0.3.1 does everything in numpy,
+            #     # because the PyTorch slicing and slice assignment is too
+            #     # flaky.
+            #     hidden_norms = hidden_norms.data.cpu().numpy()
+            #
+            #     clipped_num += 1
+            #     if hidden_norms.max() > max_clipped_norm:
+            #         max_clipped_norm = hidden_norms.max()
+            #
+            #     clip_select = hidden_norms > max_norm
+            #     clip_norms = hidden_norms[clip_select]
+            #
+            #     mask = np.ones(prev_s.size())
+            #     normalizer = max_norm / clip_norms
+            #     normalizer = normalizer[:, np.newaxis]
+            #
+            #     mask[clip_select] = normalizer
+            #     prev_s *= torch.autograd.Variable(
+            #         torch.FloatTensor(mask).cuda(), requires_grad=False)
 
-                clipped_num += 1
-                if hidden_norms.max() > max_clipped_norm:
-                    max_clipped_norm = hidden_norms.max()
-
-                clip_select = hidden_norms > max_norm
-                clip_norms = hidden_norms[clip_select]
-
-                mask = np.ones(prev_s.size())
-                normalizer = max_norm / clip_norms
-                normalizer = normalizer[:, np.newaxis]
-
-                mask[clip_select] = normalizer
-                prev_s *= torch.autograd.Variable(
-                    torch.FloatTensor(mask).cuda(), requires_grad=False)
-
-            if clipped_num > 0:
-                logger.info(f'clipped {clipped_num} hidden states in one forward '
-                            f'pass. '
-                            f'max clipped hidden state norm: {max_clipped_norm}')
+            # if clipped_num > 0:
+            #     logger.info(f'clipped {clipped_num} hidden states in one forward '
+            #                 f'pass. '
+            #                 f'max clipped hidden state norm: {max_clipped_norm}')
 
 
             inp = emb[step,:]
-            hidden = self._rnn_fn(sample_arc, inp, hidden,
-                                        input_mask, layer_mask)
+            # hidden = self._nas_cell(sample_arc, inp, hidden,
+            #                             input_mask, layer_mask)
+
+            hidden = self._nas_cell_s(sample_arc, inp, hidden,
+                                         input_mask, layer_mask)
+
+            # hidden = self.test_cell(inp, hidden)
+            #h, c = self.test_lstm(inp, (h, c))
+
             step += 1
             all_s.append(hidden)
 
@@ -487,3 +592,17 @@ class RNN(models.shared_base.SharedModel):
         for param in self.parameters():
             param.data.uniform_(-init_range, init_range)
         self.decoder.bias.data.fill_(0)
+
+    def get_f(self, idx):
+
+        idx = int(idx)
+        if idx == 0:
+            f = F.relu
+        elif idx == 1:
+            f = F.tanh
+        elif idx == 2:
+            f = lambda x: x
+        elif idx == 3:
+            f = F.sigmoid
+        return f
+

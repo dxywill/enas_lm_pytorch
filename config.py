@@ -92,7 +92,7 @@ learn_arg.add_argument('--discount', type=float, default=1.0) # TODO
 learn_arg.add_argument('--controller_max_step', type=int, default=2000,
                        help='step for controller parameters')
 learn_arg.add_argument('--controller_optim', type=str, default='adam')
-learn_arg.add_argument('--controller_lr', type=float, default=5e-5,
+learn_arg.add_argument('--controller_lr', type=float, default=3.5e-4,
                        help="will be ignored if --controller_lr_cosine=True")
 learn_arg.add_argument('--controller_lr_cosine', type=str2bool, default=False)
 learn_arg.add_argument('--controller_lr_max', type=float, default=0.05,

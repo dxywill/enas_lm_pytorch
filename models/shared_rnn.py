@@ -164,6 +164,7 @@ class RNN(models.shared_base.SharedModel):
 
         self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
 
+        self.test_lstm = nn.LSTMCell(1000, 1000, bias=False)
         # if self.args.tie_weights:
         #     self.decoder.weight = self.encoder.weight
 
@@ -236,6 +237,30 @@ class RNN(models.shared_base.SharedModel):
                 for f in range(self.num_func):
                     self.w_combined[idx][jdx][f].weight.data.uniform_(-initrange, initrange)
 
+    def _rnn_fn_test(self, sample_arc, x, prev_s, input_mask, layer_mask):
+
+        logits = []
+        h = prev_s
+        c = prev_s
+        step = 0
+        num_steps = x.size()[0]
+        clipped_num = 0
+        max_clipped_norm = 0
+
+        while step < num_steps:
+            inp = x[step, :]
+            next_h, next_c = self.test_lstm(inp, (h, c))
+            h = next_h
+            c = next_c
+            logits.append(next_h)
+
+        output = torch.stack(logits)
+        decoded = self.decoder(
+            output.view(output.size(0) * output.size(1), output.size(2)))
+        decoded = decoded.view(output.size(0), output.size(1), decoded.size(1))
+        return decoded, prev_s
+
+
     def _rnn_fn(self, sample_arc, x, prev_s, input_mask, layer_mask):
         """Multi-layer LSTM.
 
@@ -276,7 +301,42 @@ class RNN(models.shared_base.SharedModel):
             return h
 
         step = 0
+        clipped_num = 0
+        max_clipped_norm = 0
+
         while step < num_steps:
+
+            # hidden_norms = prev_s.norm(dim=-1)
+            # max_norm = 25.0
+            # if hidden_norms.data.max() > max_norm:
+            #     # TODO(brendan): Just directly use the torch slice operations
+            #     # in PyTorch v0.4.
+            #     #
+            #     # This workaround for PyTorch v0.3.1 does everything in numpy,
+            #     # because the PyTorch slicing and slice assignment is too
+            #     # flaky.
+            #     hidden_norms = hidden_norms.data.cpu().numpy()
+            #
+            #     clipped_num += 1
+            #     if hidden_norms.max() > max_clipped_norm:
+            #         max_clipped_norm = hidden_norms.max()
+            #
+            #     clip_select = hidden_norms > max_norm
+            #     clip_norms = hidden_norms[clip_select]
+            #
+            #     mask = np.ones(prev_s.size())
+            #     normalizer = max_norm / clip_norms
+            #     normalizer = normalizer[:, np.newaxis]
+            #
+            #     mask[clip_select] = normalizer
+            #     prev_s *= torch.autograd.Variable(
+            #         torch.FloatTensor(mask).cuda(), requires_grad=False)
+            #
+            # if clipped_num > 0:
+            #     logger.info(f'clipped {clipped_num} hidden states in one forward '
+            #                 f'pass. '
+            #                 f'max clipped hidden state norm: {max_clipped_norm}')
+
 
             """Body function."""
             inp = x[step, :]
@@ -362,23 +422,36 @@ class RNN(models.shared_base.SharedModel):
         out_s, all_s, var_s = self._rnn_fn(sample_arc, emb, prev_s,
                                         input_mask, layer_mask)
 
-        top_s = torch.stack(all_s)
-        top_s = top_s.permute(1, 0, 2)
+        # logits, hidden = self._rnn_fn_test(sample_arc, emb, prev_s,
+        #                                 input_mask, layer_mask)
 
-        if is_training:
-            # top_s = tf.layers.dropout(
-            #         top_s, self.params.drop_o,
-            #         [self.params.batch_size, 1, self.params.hidden_size], training=True)
-            top_s = self.lockdrop(top_s, self.args.drop_o)
-
-        logits = torch.einsum('bnh,vh->bnv', top_s, self.encoder.weight.data)
+        # top_s = torch.stack(all_s)
+        # top_s = top_s.permute(1, 0, 2)
+        #
+        # if is_training:
+        #     # top_s = tf.layers.dropout(
+        #     #         top_s, self.params.drop_o,
+        #     #         [self.params.batch_size, 1, self.params.hidden_size], training=True)
+        #     top_s = self.lockdrop(top_s, self.args.drop_o)
+        #
+        # logits = torch.einsum('bnh,vh->bnv', top_s, self.encoder.weight.data)
 
         # loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y,
         #                                                     logits=logits)
         # loss = self.loss_fn(logits, y)
         #loss = torch.reduce_mean(loss)
 
-        return logits, all_s
+        output = torch.stack(all_s)
+
+
+        dropped_output = output
+
+        decoded = self.decoder(
+            output.view(output.size(0) * output.size(1), output.size(2)))
+        decoded = decoded.view(output.size(0), output.size(1), decoded.size(1))
+
+
+        return decoded, out_s
 
     def init_hidden(self, batch_size):
         zeros = torch.zeros(batch_size, self.args.shared_hid)

@@ -304,7 +304,7 @@ class Trainer(object):
                                                     targets,
                                                     hidden,
                                                     dags)
-            hidden = hidden[-1].detach_()
+            hidden = hidden.detach_()
             raw_total_loss += loss.data
 
             # loss += _apply_penalties(extra_out, self.args)
@@ -397,7 +397,7 @@ class Trainer(object):
         for step in range(self.args.controller_max_step):
             # sample models, need M=10?
             loss_avg = []
-            for m in range(10):
+            for m in range(1):
                 dags, log_probs, entropies = self.controller.sample(
                     with_details=True)
 
@@ -496,7 +496,7 @@ class Trainer(object):
                                             is_training=False)
             output_flat = output.view(-1, self.dataset.num_tokens)
             total_loss += len(inputs) * self.ce(output_flat, targets).data
-            hidden = hidden[-1].detach_()
+            hidden = hidden.detach_()
             ppl = math.exp(utils.to_item(total_loss) / (count + 1) / self.max_length)
 
         val_loss = utils.to_item(total_loss) / len(data)
